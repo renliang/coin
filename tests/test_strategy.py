@@ -46,3 +46,49 @@ def test_no_signal_returns_none():
 
     s = NeverBuy("test", "BTC-USDT-SWAP", "1h")
     assert s.on_bar("BTC-USDT-SWAP", "1h", make_df()) is None
+
+
+import numpy as np
+from core.strategy.templates.momentum import MomentumStrategy
+from core.strategy.templates.breakout import BreakoutStrategy
+
+
+def make_trend_df(n=100, trend="up"):
+    prices = np.linspace(100, 120, n) if trend == "up" else np.linspace(120, 100, n)
+    return pd.DataFrame({
+        "open": prices * 0.999,
+        "high": prices * 1.002,
+        "low": prices * 0.998,
+        "close": prices,
+        "volume": [1000.0] * n,
+    })
+
+
+def test_momentum_returns_signal_or_none():
+    s = MomentumStrategy("m1", "BTC-USDT-SWAP", "1h")
+    df = make_trend_df(100)
+    result = s.on_bar("BTC-USDT-SWAP", "1h", df)
+    assert result is None or result.direction in ("long", "short")
+
+
+def test_breakout_requires_enough_bars():
+    s = BreakoutStrategy("b1", "BTC-USDT-SWAP", "1h", params={"lookback": 20})
+    short_df = make_trend_df(10)
+    result = s.on_bar("BTC-USDT-SWAP", "1h", short_df)
+    assert result is None
+
+
+def test_breakout_long_signal_on_new_high():
+    s = BreakoutStrategy("b1", "BTC-USDT-SWAP", "1h", params={"lookback": 5})
+    prices = [100.0] * 30
+    prices[-1] = 115.0  # 新高突破
+    df = pd.DataFrame({
+        "open": [p * 0.999 for p in prices],
+        "high": [p * 1.001 for p in prices],
+        "low": [p * 0.999 for p in prices],
+        "close": prices,
+        "volume": [1000.0] * 30,
+    })
+    result = s.on_bar("BTC-USDT-SWAP", "1h", df)
+    assert result is not None
+    assert result.direction == "long"
