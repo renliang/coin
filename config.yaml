@@ -9,6 +9,8 @@ scanner:
   drop_min: 0.05               # 最小跌幅 5%
   drop_max: 0.15               # 最大跌幅 15%
   max_daily_change: 0.05       # 单日最大涨跌幅 5%
-  max_coins: 500               # CoinGecko最多拉取币种数
-  max_pages: 10                # CoinGecko最多翻页数
+  max_coins: 99999             # 不限制币种数（全量）
+  max_pages: 100               # 不限制翻页数（全量）
+  page_delay: 30               # CoinGecko每页间隔秒数
+  skip_market_cap_filter: true  # 暂时跳过市值过滤（CoinGecko限速中）
   top_n: 20                    # 输出前N个结果

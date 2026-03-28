@@ -1,12 +1,15 @@
 import argparse
+import json
+import os
 import sys
 import time
+from datetime import datetime
 
 import yaml
 from tabulate import tabulate
 
-from scanner.coingecko import fetch_small_cap_coins, set_proxy as set_coingecko_proxy
-from scanner.kline import fetch_klines_batch, set_proxy as set_kline_proxy
+from scanner.coingecko import fetch_market_caps, set_proxy as set_coingecko_proxy
+from scanner.kline import fetch_klines_batch, fetch_futures_symbols, set_proxy as set_kline_proxy
 from scanner.detector import detect_pattern
 from scanner.scorer import score_result, rank_results
 
@@ -26,35 +29,27 @@ def run(config: dict, top_n: int | None = None, symbols_override: list[str] | No
     top_n = top_n or config.get("top_n", 20)
     max_market_cap = config.get("max_market_cap", 100_000_000)
 
+    # Step 1: 获取交易对列表
     if symbols_override:
-        # 直接使用指定的交易对，跳过CoinGecko
         symbols = symbols_override
-        coin_map = {s: {"market_cap": 0} for s in symbols}
-        print(f"[1/3] 使用指定的 {len(symbols)} 个交易对，跳过CoinGecko")
+        print(f"[1/4] 使用指定的 {len(symbols)} 个交易对")
     else:
-        # Step 1: CoinGecko 市值筛选
-        print(f"[1/3] 从CoinGecko拉取市值 < ${max_market_cap / 1e6:.0f}M 的币种...")
-        coins = fetch_small_cap_coins(
-            max_market_cap,
-            max_coins=config.get("max_coins", 500),
-            max_pages=config.get("max_pages", 10),
-        )
-        print(f"       找到 {len(coins)} 个小市值币种")
+        print(f"[1/4] 从Binance获取USDT永续合约列表...")
+        symbols = fetch_futures_symbols()
+        print(f"       共 {len(symbols)} 个合约交易对")
 
-        if not coins:
-            print("没有找到符合条件的币种。")
-            return
+    if not symbols:
+        print("没有找到交易对。")
+        return
 
-        symbols = [f"{c['symbol']}/USDT" for c in coins]
-        coin_map = {f"{c['symbol']}/USDT": c for c in coins}
-
-    print(f"[2/3] 从Binance拉取K线数据（约{len(symbols)}个交易对）...")
+    # Step 2: 拉K线
+    print(f"[2/4] 从Binance拉取K线数据（{len(symbols)}个交易对）...")
     klines = fetch_klines_batch(symbols, days=30, delay=0.5)
     print(f"       成功获取 {len(klines)} 个交易对的K线")
 
     # Step 3: 形态检测 + 评分
-    print("[3/3] 形态检测中...")
-    results = []
+    print("[3/4] 形态检测中...")
+    matches = []
     for symbol, df in klines.items():
         detection = detect_pattern(
             df,
@@ -73,21 +68,45 @@ def run(config: dict, top_n: int | None = None, symbols_override: list[str] | No
             drop_max=config.get("drop_max", 0.15),
             max_daily_change=config.get("max_daily_change", 0.05),
         )
-        coin_info = coin_map.get(symbol, {})
-        results.append({
+        matches.append({
             "symbol": symbol,
-            "market_cap_m": coin_info.get("market_cap", 0) / 1e6,
             "drop_pct": detection.drop_pct,
             "volume_ratio": detection.volume_ratio,
             "window_days": detection.window_days,
             "score": score,
         })
 
-    ranked = rank_results(results, top_n=top_n)
+    print(f"       形态命中 {len(matches)} 个")
 
-    if not ranked:
+    if not matches:
         print("\n未找到符合底部蓄力形态的币种。")
         return
+
+    # Step 4: 对命中币种查市值，过滤小市值
+    skip_cap = config.get("skip_market_cap_filter", False)
+    if not symbols_override and not skip_cap:
+        base_symbols = [m["symbol"].split("/")[0] for m in matches]
+        print(f"[4/4] 查询 {len(base_symbols)} 个命中币种的市值...")
+        market_caps = fetch_market_caps(base_symbols, page_delay=config.get("page_delay", 30))
+
+        for m in matches:
+            base = m["symbol"].split("/")[0]
+            m["market_cap_m"] = market_caps.get(base, 0) / 1e6
+
+        # 过滤市值
+        before = len(matches)
+        matches = [m for m in matches if 0 < m["market_cap_m"] <= max_market_cap / 1e6]
+        print(f"       市值过滤: {before} -> {len(matches)} 个 (< ${max_market_cap / 1e6:.0f}M)")
+    else:
+        print("[4/4] 跳过市值过滤")
+        for m in matches:
+            m["market_cap_m"] = 0
+
+    if not matches:
+        print("\n过滤后没有符合条件的币种。")
+        return
+
+    ranked = rank_results(matches, top_n=top_n)
 
     # 输出表格
     table_data = []
@@ -95,7 +114,7 @@ def run(config: dict, top_n: int | None = None, symbols_override: list[str] | No
         table_data.append([
             i,
             r["symbol"],
-            f"{r['market_cap_m']:.1f}",
+            f"{r['market_cap_m']:.1f}" if r["market_cap_m"] > 0 else "-",
             f"{r['drop_pct'] * 100:.1f}%",
             f"{r['volume_ratio']:.2f}",
             r["window_days"],
@@ -106,12 +125,26 @@ def run(config: dict, top_n: int | None = None, symbols_override: list[str] | No
     print(f"\n找到 {len(ranked)} 个底部蓄力形态币种:\n")
     print(tabulate(table_data, headers=headers, tablefmt="simple"))
 
+    # 保存结果
+    os.makedirs("results", exist_ok=True)
+    ts = datetime.now().strftime("%Y-%m-%d_%H%M%S")
+    json_path = f"results/{ts}.json"
+    with open(json_path, "w") as f:
+        json.dump(ranked, f, ensure_ascii=False, indent=2)
+    txt_path = f"results/{ts}.txt"
+    with open(txt_path, "w") as f:
+        f.write(f"扫描时间: {ts}\n")
+        f.write(f"找到 {len(ranked)} 个底部蓄力形态币种:\n\n")
+        f.write(tabulate(table_data, headers=headers, tablefmt="simple"))
+        f.write("\n")
+    print(f"\n结果已保存到 {json_path} 和 {txt_path}")
+
 
 def main():
     parser = argparse.ArgumentParser(description="币种底部蓄力形态筛选器")
     parser.add_argument("--top", type=int, help="输出前N个结果")
     parser.add_argument("--config", default="config.yaml", help="配置文件路径")
-    parser.add_argument("--symbols", nargs="+", help="直接指定交易对（跳过CoinGecko），如 BTC/USDT ETH/USDT")
+    parser.add_argument("--symbols", nargs="+", help="直接指定交易对（跳过自动扫描），如 BTC/USDT ETH/USDT")
     args = parser.parse_args()
 
     config = load_config(args.config)

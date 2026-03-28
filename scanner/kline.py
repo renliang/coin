@@ -25,6 +25,22 @@ def set_proxy(proxy: str):
     _get_exchange(proxy)
 
 
+def fetch_futures_symbols() -> list[str]:
+    """获取Binance支持USDT永续合约的现货交易对列表，如 ['BTC/USDT', 'ETH/USDT', ...]"""
+    exchange = _get_exchange()
+    exchange.load_markets()
+    # 合约符号格式为 BTC/USDT:USDT，提取对应的现货符号 BTC/USDT
+    spot_symbols = set()
+    for symbol, market in exchange.markets.items():
+        if market.get("swap") and market.get("quote") == "USDT":
+            base = market.get("base", "")
+            spot = f"{base}/USDT"
+            # 确认现货也存在
+            if spot in exchange.markets:
+                spot_symbols.add(spot)
+    return sorted(spot_symbols)
+
+
 def fetch_klines(symbol: str, days: int = 30) -> pd.DataFrame | None:
     """从Binance拉取日K线数据。
 

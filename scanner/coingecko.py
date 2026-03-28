@@ -16,8 +16,9 @@ def set_proxy(proxy: str):
 
 def fetch_small_cap_coins(
     max_market_cap: float = 100_000_000,
-    max_coins: int = 500,
-    max_pages: int = 10,
+    max_coins: int = 99999,
+    max_pages: int = 100,
+    page_delay: float = 30,
 ) -> list[dict]:
     """从CoinGecko拉取市值低于阈值的币种列表。
 
@@ -88,6 +89,69 @@ def fetch_small_cap_coins(
             break
 
         page += 1
-        time.sleep(8)  # CoinGecko免费版需要保守间隔
+        time.sleep(page_delay)
 
     return coins
+
+
+def fetch_market_caps(symbols: list[str], page_delay: float = 8) -> dict[str, float]:
+    """批量查询币种市值。
+
+    Args:
+        symbols: 币种符号列表（大写），如 ["XNO", "ZIL"]
+        page_delay: 请求间隔秒数
+
+    Returns:
+        dict mapping symbol(大写) -> market_cap(美元)
+    """
+    # CoinGecko /coins/markets 支持按 symbol 搜索，但不支持直接用symbol查
+    # 用 /search 太慢，还是用 /coins/markets 分页但一次查很多
+    # 最高效：用 ids 参数，但我们没有 coingecko id
+    # 折中方案：拉前几页，建立 symbol -> market_cap 映射
+    result = {}
+    symbols_set = {s.upper() for s in symbols}
+    page = 1
+    while symbols_set - result.keys() and page <= 60:
+        for attempt in range(4):
+            resp = requests.get(
+                f"{COINGECKO_BASE}/coins/markets",
+                params={
+                    "vs_currency": "usd",
+                    "order": "market_cap_desc",
+                    "per_page": 250,
+                    "page": page,
+                    "sparkline": "false",
+                },
+                timeout=30,
+                proxies=_proxies or None,
+            )
+            if resp.status_code == 429:
+                wait = 2 ** attempt * 15
+                print(f"       CoinGecko限速，等待{wait}秒...")
+                time.sleep(wait)
+                continue
+            resp.raise_for_status()
+            break
+        else:
+            break
+
+        data = resp.json()
+        if not data:
+            break
+
+        for coin in data:
+            sym = coin.get("symbol", "").upper()
+            mc = coin.get("market_cap") or 0
+            if sym in symbols_set and mc > 0:
+                result[sym] = mc
+
+        remaining = len(symbols_set - result.keys())
+        print(f"       市值查询第{page}页，已找到{len(result)}个，剩余{remaining}个")
+
+        if remaining == 0 or len(data) < 250:
+            break
+
+        page += 1
+        time.sleep(page_delay)
+
+    return result
