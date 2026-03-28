@@ -1,5 +1,5 @@
 proxy:
-  https: ""   # 如需代理填入，如 http://127.0.0.1:7890
+  https: "http://127.0.0.1:7897"
 
 scanner:
   max_market_cap: 100000000    # 市值上限（美元），默认1亿

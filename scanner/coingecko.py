@@ -5,6 +5,14 @@ import requests
 
 COINGECKO_BASE = "https://api.coingecko.com/api/v3"
 
+_proxies = {}
+
+
+def set_proxy(proxy: str):
+    global _proxies
+    if proxy:
+        _proxies = {"https": proxy, "http": proxy}
+
 
 def fetch_small_cap_coins(
     max_market_cap: float = 100_000_000,
@@ -40,6 +48,7 @@ def fetch_small_cap_coins(
                     "sparkline": "false",
                 },
                 timeout=30,
+                proxies=_proxies or None,
             )
             if resp.status_code == 429:
                 wait = 2 ** attempt * 15

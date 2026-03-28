@@ -5,8 +5,8 @@ import time
 import yaml
 from tabulate import tabulate
 
-from scanner.coingecko import fetch_small_cap_coins
-from scanner.kline import fetch_klines_batch, set_proxy
+from scanner.coingecko import fetch_small_cap_coins, set_proxy as set_coingecko_proxy
+from scanner.kline import fetch_klines_batch, set_proxy as set_kline_proxy
 from scanner.detector import detect_pattern
 from scanner.scorer import score_result, rank_results
 
@@ -16,7 +16,8 @@ def load_config(path: str = "config.yaml") -> dict:
         raw = yaml.safe_load(f)
     proxy = (raw.get("proxy") or {}).get("https", "")
     if proxy:
-        set_proxy(proxy)
+        set_kline_proxy(proxy)
+        set_coingecko_proxy(proxy)
         print(f"[代理] 使用 {proxy}")
     return raw.get("scanner", {})
 
