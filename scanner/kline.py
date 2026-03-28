@@ -4,8 +4,8 @@ import ccxt
 import pandas as pd
 
 
-# 模块级共享exchange实例，避免每次创建新连接
 _exchange = None
+_okx = None
 
 
 def _get_exchange(proxy: str = "") -> ccxt.binance:
@@ -18,40 +18,47 @@ def _get_exchange(proxy: str = "") -> ccxt.binance:
     return _exchange
 
 
+def _get_okx(proxy: str = "") -> ccxt.okx:
+    global _okx
+    if _okx is None:
+        config = {"enableRateLimit": True, "timeout": 30000}
+        if proxy:
+            config["proxies"] = {"https": proxy, "http": proxy}
+        _okx = ccxt.okx(config)
+    return _okx
+
+
 def set_proxy(proxy: str):
-    """设置代理，需在fetch_klines前调用"""
-    global _exchange
+    global _exchange, _okx
     _exchange = None
+    _okx = None
     _get_exchange(proxy)
+    _get_okx(proxy)
 
 
 def fetch_futures_symbols() -> list[str]:
-    """获取Binance支持USDT永续合约的现货交易对列表，如 ['BTC/USDT', 'ETH/USDT', ...]"""
+    """获取OKX支持USDT永续合约、且Binance有现货的交易对列表"""
+    okx = _get_okx()
+    okx.load_markets()
+    # OKX 合约符号
+    okx_bases = set()
+    for symbol, market in okx.markets.items():
+        if market.get("swap") and market.get("active") and market.get("quote") == "USDT":
+            okx_bases.add(market.get("base", ""))
+
+    # Binance 现货确认（K线从Binance拉）
     exchange = _get_exchange()
     exchange.load_markets()
-    # 合约符号格式为 BTC/USDT:USDT，提取对应的现货符号 BTC/USDT
-    spot_symbols = set()
-    for symbol, market in exchange.markets.items():
-        if market.get("swap") and market.get("quote") == "USDT":
-            base = market.get("base", "")
-            spot = f"{base}/USDT"
-            # 确认现货也存在
-            if spot in exchange.markets:
-                spot_symbols.add(spot)
-    return sorted(spot_symbols)
+    result = []
+    for base in sorted(okx_bases):
+        spot = f"{base}/USDT"
+        if spot in exchange.markets:
+            result.append(spot)
+    return result
 
 
 def fetch_klines(symbol: str, days: int = 30) -> pd.DataFrame | None:
-    """从Binance拉取日K线数据。
-
-    Args:
-        symbol: 交易对，如 "BTC/USDT"
-        days: 拉取天数
-
-    Returns:
-        DataFrame with columns: timestamp, open, high, low, close, volume
-        如果交易对不存在返回None
-    """
+    """从Binance拉取日K线数据。"""
     exchange = _get_exchange()
     try:
         since = exchange.milliseconds() - days * 24 * 60 * 60 * 1000
@@ -70,16 +77,7 @@ def fetch_klines(symbol: str, days: int = 30) -> pd.DataFrame | None:
 
 
 def fetch_klines_batch(symbols: list[str], days: int = 30, delay: float = 0.5) -> dict[str, pd.DataFrame]:
-    """批量拉取多个交易对的K线。
-
-    Args:
-        symbols: 交易对列表
-        days: 拉取天数
-        delay: 每次请求间隔秒数
-
-    Returns:
-        dict mapping symbol -> DataFrame (跳过失败的)
-    """
+    """批量拉取多个交易对的K线。"""
     results = {}
     total = len(symbols)
     for i, symbol in enumerate(symbols, 1):
