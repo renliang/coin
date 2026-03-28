@@ -1,110 +1,106 @@
-import asyncio
-import logging
-import uvicorn
-from core.config import load_config
-from core.data.fetcher import KlineFetcher
-from core.data.stream import MarketStream
-from core.risk.manager import RiskManager
-from core.execution.engine import ExecutionEngine
-from api.routes import app, set_engine, set_strategies, set_db_path
-import importlib
+import argparse
+import sys
+import time
 
-logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
-logger = logging.getLogger(__name__)
+import yaml
+from tabulate import tabulate
+
+from scanner.coingecko import fetch_small_cap_coins
+from scanner.kline import fetch_klines_batch
+from scanner.detector import detect_pattern
+from scanner.scorer import score_result, rank_results
 
 
-async def run_engine():
-    config = load_config("config.yaml")
-    exc_cfg = config.exchange
+def load_config(path: str = "config.yaml") -> dict:
+    with open(path) as f:
+        return yaml.safe_load(f).get("scanner", {})
 
-    stream = MarketStream(
-        exc_cfg.id, exc_cfg.api_key, exc_cfg.secret, exc_cfg.password, exc_cfg.sandbox
-    )
-    risk = RiskManager(config.risk)
-    execution = ExecutionEngine(exc_cfg, db_path=config.database.path)
 
-    set_db_path(config.database.path)
+def run(config: dict, top_n: int | None = None):
+    top_n = top_n or config.get("top_n", 20)
+    max_market_cap = config.get("max_market_cap", 100_000_000)
 
-    # 加载策略
-    strategies = []
-    for s_cfg in config.strategies:
-        cls = None
-        if "." in s_cfg.class_name:
-            module_path, class_name = s_cfg.class_name.rsplit(".", 1)
-            try:
-                module = importlib.import_module(module_path)
-                cls = getattr(module, class_name)
-            except (ImportError, AttributeError):
-                pass
-        if cls is None:
-            # 尝试内置模板
-            from core.strategy.templates import momentum, breakout
-            templates = {
-                "MomentumStrategy": momentum.MomentumStrategy,
-                "BreakoutStrategy": breakout.BreakoutStrategy,
-            }
-            cls = templates.get(s_cfg.class_name)
-        if cls is None:
-            logger.error(f"找不到策略类: {s_cfg.class_name}")
+    # Step 1: CoinGecko 市值筛选
+    print(f"[1/3] 从CoinGecko拉取市值 < ${max_market_cap / 1e6:.0f}M 的币种...")
+    coins = fetch_small_cap_coins(max_market_cap)
+    print(f"       找到 {len(coins)} 个小市值币种")
+
+    if not coins:
+        print("没有找到符合条件的币种。")
+        return
+
+    # Step 2: 构建Binance交易对并拉K线
+    symbols = [f"{c['symbol']}/USDT" for c in coins]
+    coin_map = {f"{c['symbol']}/USDT": c for c in coins}
+
+    print(f"[2/3] 从Binance拉取K线数据（约{len(symbols)}个交易对）...")
+    klines = fetch_klines_batch(symbols, days=30, delay=0.5)
+    print(f"       成功获取 {len(klines)} 个交易对的K线")
+
+    # Step 3: 形态检测 + 评分
+    print("[3/3] 形态检测中...")
+    results = []
+    for symbol, df in klines.items():
+        detection = detect_pattern(
+            df,
+            window_min_days=config.get("window_min_days", 7),
+            window_max_days=config.get("window_max_days", 14),
+            volume_ratio=config.get("volume_ratio", 0.5),
+            drop_min=config.get("drop_min", 0.05),
+            drop_max=config.get("drop_max", 0.15),
+            max_daily_change=config.get("max_daily_change", 0.05),
+        )
+        if not detection.matched:
             continue
-        strategy = cls(s_cfg.name, s_cfg.symbol, s_cfg.timeframe, s_cfg.params)
-        strategies.append(strategy)
-        logger.info(f"已加载策略: {s_cfg.name} ({s_cfg.symbol} {s_cfg.timeframe})")
+        score = score_result(
+            detection,
+            drop_min=config.get("drop_min", 0.05),
+            drop_max=config.get("drop_max", 0.15),
+            max_daily_change=config.get("max_daily_change", 0.05),
+        )
+        coin_info = coin_map.get(symbol, {})
+        results.append({
+            "symbol": symbol,
+            "market_cap_m": coin_info.get("market_cap", 0) / 1e6,
+            "drop_pct": detection.drop_pct,
+            "volume_ratio": detection.volume_ratio,
+            "window_days": detection.window_days,
+            "score": score,
+        })
 
-    set_engine(execution)
-    set_strategies(strategies)
+    ranked = rank_results(results, top_n=top_n)
 
-    # 同步持仓
-    await execution.sync_positions()
+    if not ranked:
+        print("\n未找到符合底部蓄力形态的币种。")
+        return
 
-    # 注册行情回调
-    async def on_bar(symbol, timeframe, df):
-        for strategy in strategies:
-            if not strategy.should_handle(symbol, timeframe):
-                continue
-            signal = strategy.on_bar(symbol, timeframe, df)
-            if signal is None:
-                continue
-            # 更新风控账户状态
-            try:
-                bal = await execution.exchange.fetch_balance()
-                usdt = bal.get("USDT", {})
-                balance = usdt.get("total", 0.0)
-                risk.update_account(balance=balance, daily_pnl=0.0, open_positions=len(execution._positions))
-            except Exception:
-                pass
-            approved = risk.evaluate(signal)
-            if approved:
-                logger.info(f"信号审核通过: {signal.symbol} {signal.direction} | {signal.reason}")
-                await execution.execute(approved)
+    # 输出表格
+    table_data = []
+    for i, r in enumerate(ranked, 1):
+        table_data.append([
+            i,
+            r["symbol"],
+            f"{r['market_cap_m']:.1f}",
+            f"{r['drop_pct'] * 100:.1f}%",
+            f"{r['volume_ratio']:.2f}",
+            r["window_days"],
+            f"{r['score']:.2f}",
+        ])
 
-    stream.on_bar(on_bar)
-
-    # 启动 WebSocket 监听（每个 symbol/timeframe 组合）
-    watch_keys: set[tuple] = set()
-    for strategy in strategies:
-        key = (strategy.symbol, strategy.timeframe)
-        if key not in watch_keys:
-            watch_keys.add(key)
-            asyncio.create_task(stream.watch_candles(strategy.symbol, strategy.timeframe))
-
-    logger.info("交易引擎已启动")
-    await asyncio.Event().wait()  # 永久运行
+    headers = ["排名", "币种", "市值(M$)", "跌幅", "缩量比", "天数", "评分"]
+    print(f"\n找到 {len(ranked)} 个底部蓄力形态币种:\n")
+    print(tabulate(table_data, headers=headers, tablefmt="simple"))
 
 
-async def main():
-    config = load_config("config.yaml")
-    server = uvicorn.Server(uvicorn.Config(
-        app,
-        host=config.web.host,
-        port=config.web.port,
-        log_level="info",
-    ))
-    await asyncio.gather(
-        run_engine(),
-        server.serve(),
-    )
+def main():
+    parser = argparse.ArgumentParser(description="币种底部蓄力形态筛选器")
+    parser.add_argument("--top", type=int, help="输出前N个结果")
+    parser.add_argument("--config", default="config.yaml", help="配置文件路径")
+    args = parser.parse_args()
+
+    config = load_config(args.config)
+    run(config, top_n=args.top)
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    main()
