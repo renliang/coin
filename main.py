@@ -6,32 +6,46 @@ import yaml
 from tabulate import tabulate
 
 from scanner.coingecko import fetch_small_cap_coins
-from scanner.kline import fetch_klines_batch
+from scanner.kline import fetch_klines_batch, set_proxy
 from scanner.detector import detect_pattern
 from scanner.scorer import score_result, rank_results
 
 
 def load_config(path: str = "config.yaml") -> dict:
     with open(path) as f:
-        return yaml.safe_load(f).get("scanner", {})
+        raw = yaml.safe_load(f)
+    proxy = (raw.get("proxy") or {}).get("https", "")
+    if proxy:
+        set_proxy(proxy)
+        print(f"[代理] 使用 {proxy}")
+    return raw.get("scanner", {})
 
 
-def run(config: dict, top_n: int | None = None):
+def run(config: dict, top_n: int | None = None, symbols_override: list[str] | None = None):
     top_n = top_n or config.get("top_n", 20)
     max_market_cap = config.get("max_market_cap", 100_000_000)
 
-    # Step 1: CoinGecko 市值筛选
-    print(f"[1/3] 从CoinGecko拉取市值 < ${max_market_cap / 1e6:.0f}M 的币种...")
-    coins = fetch_small_cap_coins(max_market_cap)
-    print(f"       找到 {len(coins)} 个小市值币种")
+    if symbols_override:
+        # 直接使用指定的交易对，跳过CoinGecko
+        symbols = symbols_override
+        coin_map = {s: {"market_cap": 0} for s in symbols}
+        print(f"[1/3] 使用指定的 {len(symbols)} 个交易对，跳过CoinGecko")
+    else:
+        # Step 1: CoinGecko 市值筛选
+        print(f"[1/3] 从CoinGecko拉取市值 < ${max_market_cap / 1e6:.0f}M 的币种...")
+        coins = fetch_small_cap_coins(
+            max_market_cap,
+            max_coins=config.get("max_coins", 500),
+            max_pages=config.get("max_pages", 10),
+        )
+        print(f"       找到 {len(coins)} 个小市值币种")
 
-    if not coins:
-        print("没有找到符合条件的币种。")
-        return
+        if not coins:
+            print("没有找到符合条件的币种。")
+            return
 
-    # Step 2: 构建Binance交易对并拉K线
-    symbols = [f"{c['symbol']}/USDT" for c in coins]
-    coin_map = {f"{c['symbol']}/USDT": c for c in coins}
+        symbols = [f"{c['symbol']}/USDT" for c in coins]
+        coin_map = {f"{c['symbol']}/USDT": c for c in coins}
 
     print(f"[2/3] 从Binance拉取K线数据（约{len(symbols)}个交易对）...")
     klines = fetch_klines_batch(symbols, days=30, delay=0.5)
@@ -96,10 +110,11 @@ def main():
     parser = argparse.ArgumentParser(description="币种底部蓄力形态筛选器")
     parser.add_argument("--top", type=int, help="输出前N个结果")
     parser.add_argument("--config", default="config.yaml", help="配置文件路径")
+    parser.add_argument("--symbols", nargs="+", help="直接指定交易对（跳过CoinGecko），如 BTC/USDT ETH/USDT")
     args = parser.parse_args()
 
     config = load_config(args.config)
-    run(config, top_n=args.top)
+    run(config, top_n=args.top, symbols_override=args.symbols)
 
 
 if __name__ == "__main__":

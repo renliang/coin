@@ -1,3 +1,6 @@
+proxy:
+  https: ""   # 如需代理填入，如 http://127.0.0.1:7890
+
 scanner:
   max_market_cap: 100000000    # 市值上限（美元），默认1亿
   window_min_days: 7           # 检测窗口最小天数
@@ -6,4 +9,6 @@ scanner:
   drop_min: 0.05               # 最小跌幅 5%
   drop_max: 0.15               # 最大跌幅 15%
   max_daily_change: 0.05       # 单日最大涨跌幅 5%
+  max_coins: 500               # CoinGecko最多拉取币种数
+  max_pages: 10                # CoinGecko最多翻页数
   top_n: 20                    # 输出前N个结果
