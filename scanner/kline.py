@@ -73,7 +73,10 @@ def fetch_klines(symbol: str, days: int = 30) -> pd.DataFrame | None:
 
     df = pd.DataFrame(ohlcv, columns=["timestamp", "open", "high", "low", "close", "volume"])
     df["timestamp"] = pd.to_datetime(df["timestamp"], unit="ms")
-    return df
+    # 丢弃当天未收盘的K线，避免实时数据波动影响检测结果
+    now = pd.Timestamp.utcnow().normalize()
+    df = df[df["timestamp"] < now].reset_index(drop=True)
+    return df if len(df) > 0 else None
 
 
 def fetch_klines_batch(symbols: list[str], days: int = 30, delay: float = 0.5) -> dict[str, pd.DataFrame]:
