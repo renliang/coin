@@ -1,6 +1,6 @@
 import pandas as pd
 import numpy as np
-from scanner.backtest import run_backtest, BacktestHit
+from scanner.backtest import run_backtest, BacktestHit, compute_stats
 
 
 def _make_klines(prices: list[float], volumes: list[float]) -> pd.DataFrame:
@@ -78,3 +78,43 @@ def test_run_backtest_dedup_adjacent_hits():
         date_a = pd.Timestamp(hits[i - 1].detect_date)
         date_b = pd.Timestamp(hits[i].detect_date)
         assert (date_b - date_a).days >= 14
+
+
+def test_compute_stats_overall():
+    """验证整体统计计算。"""
+    hits = [
+        BacktestHit("A/USDT", "2026-01-15", 14, 0.10, 0.3, 0.65,
+                     {"3d": 0.05, "7d": 0.10, "14d": 0.15, "30d": 0.20}),
+        BacktestHit("B/USDT", "2026-01-20", 10, 0.08, 0.4, 0.50,
+                     {"3d": -0.03, "7d": 0.02, "14d": -0.05, "30d": 0.08}),
+        BacktestHit("C/USDT", "2026-02-01", 12, 0.12, 0.2, 0.35,
+                     {"3d": 0.02, "7d": -0.01, "14d": None, "30d": None}),
+    ]
+    stats = compute_stats(hits)
+
+    assert stats["total_hits"] == 3
+    overall = stats["overall"]
+    assert "3d" in overall
+    assert overall["3d"]["count"] == 3
+    assert abs(overall["3d"]["win_rate"] - 2 / 3) < 0.01
+    assert abs(overall["3d"]["mean"] - (0.05 - 0.03 + 0.02) / 3) < 0.001
+
+
+def test_compute_stats_by_score_tier():
+    """验证按评分分档统计。"""
+    hits = [
+        BacktestHit("A/USDT", "2026-01-15", 14, 0.10, 0.3, 0.65,
+                     {"3d": 0.05, "7d": 0.10, "14d": 0.15, "30d": 0.20}),
+        BacktestHit("B/USDT", "2026-01-20", 10, 0.08, 0.4, 0.50,
+                     {"3d": -0.03, "7d": 0.02, "14d": -0.05, "30d": 0.08}),
+        BacktestHit("C/USDT", "2026-02-01", 12, 0.12, 0.2, 0.35,
+                     {"3d": 0.02, "7d": -0.01, "14d": None, "30d": None}),
+    ]
+    stats = compute_stats(hits)
+
+    tiers = stats["by_tier"]
+    assert tiers["high"]["3d"]["count"] == 1
+    assert tiers["mid"]["3d"]["count"] == 1
+    assert tiers["low"]["3d"]["count"] == 1
+    assert tiers["high"]["3d"]["win_rate"] == 1.0
+    assert tiers["low"]["3d"]["win_rate"] == 1.0

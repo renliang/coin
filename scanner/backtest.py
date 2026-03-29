@@ -86,3 +86,45 @@ def run_backtest(
             ))
 
     return all_hits
+
+
+def _calc_period_stats(hits: list[BacktestHit], period: str) -> dict:
+    """计算单个周期的统计指标。"""
+    values = [h.returns[period] for h in hits if h.returns.get(period) is not None]
+    if not values:
+        return {"count": 0, "win_rate": 0.0, "mean": 0.0, "median": 0.0, "max": 0.0, "min": 0.0}
+    arr = np.array(values)
+    return {
+        "count": len(arr),
+        "win_rate": float(np.mean(arr > 0)),
+        "mean": float(np.mean(arr)),
+        "median": float(np.median(arr)),
+        "max": float(np.max(arr)),
+        "min": float(np.min(arr)),
+    }
+
+
+def compute_stats(hits: list[BacktestHit]) -> dict:
+    """计算整体统计和分档统计。"""
+    periods = [f"{p}d" for p in RETURN_PERIODS]
+
+    overall = {}
+    for period in periods:
+        overall[period] = _calc_period_stats(hits, period)
+
+    tiers = {
+        "high": [h for h in hits if h.score >= 0.6],
+        "mid": [h for h in hits if 0.4 <= h.score < 0.6],
+        "low": [h for h in hits if h.score < 0.4],
+    }
+    by_tier = {}
+    for tier_name, tier_hits in tiers.items():
+        by_tier[tier_name] = {}
+        for period in periods:
+            by_tier[tier_name][period] = _calc_period_stats(tier_hits, period)
+
+    return {
+        "total_hits": len(hits),
+        "overall": overall,
+        "by_tier": by_tier,
+    }
