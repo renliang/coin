@@ -48,7 +48,7 @@ def run_backtest(
             if i - last_hit_idx < window_max:
                 continue
 
-            slice_df = df.iloc[:i].copy()
+            slice_df = df.iloc[:i]
             result = detect_pattern(
                 slice_df,
                 window_min_days=window_min,

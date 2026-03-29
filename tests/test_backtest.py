@@ -191,8 +191,8 @@ def test_backtest_returns_none_for_insufficient_future_data():
     }
     hits = run_backtest({"TEST/USDT": df}, config)
 
-    if len(hits) > 0:
-        hit = hits[0]
-        assert hit.returns["3d"] is not None
-        assert hit.returns["14d"] is None
-        assert hit.returns["30d"] is None
+    assert len(hits) >= 1
+    hit = hits[0]
+    assert hit.returns["3d"] is not None
+    assert hit.returns["14d"] is None
+    assert hit.returns["30d"] is None
