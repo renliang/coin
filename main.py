@@ -11,9 +11,10 @@ from scanner.kline import fetch_klines_batch, fetch_futures_symbols, set_proxy a
 from scanner.detector import detect_pattern
 from scanner.scorer import score_result, rank_results
 from scanner.tracker import save_scan, get_tracked_symbols, get_history
+from scanner.signal import SignalConfig, generate_signals
 
 
-def load_config(path: str = "config.yaml") -> dict:
+def load_config(path: str = "config.yaml") -> tuple[dict, SignalConfig]:
     with open(path) as f:
         raw = yaml.safe_load(f)
     proxy = (raw.get("proxy") or {}).get("https", "")
@@ -21,10 +22,17 @@ def load_config(path: str = "config.yaml") -> dict:
         set_kline_proxy(proxy)
         set_coingecko_proxy(proxy)
         print(f"[代理] 使用 {proxy}")
-    return raw.get("scanner", {})
+    sig = raw.get("signal", {})
+    signal_config = SignalConfig(
+        min_score=sig.get("min_score", 0.6),
+        hold_days=sig.get("hold_days", 3),
+        stop_loss=sig.get("stop_loss", 0.05),
+        take_profit=sig.get("take_profit", 0.08),
+    )
+    return raw.get("scanner", {}), signal_config
 
 
-def run(config: dict, top_n: int | None = None, symbols_override: list[str] | None = None):
+def run(config: dict, signal_config: SignalConfig, top_n: int | None = None, symbols_override: list[str] | None = None):
     top_n = top_n or config.get("top_n", 20)
     max_market_cap = config.get("max_market_cap", 100_000_000)
 
@@ -111,34 +119,58 @@ def run(config: dict, top_n: int | None = None, symbols_override: list[str] | No
     scan_id = save_scan(ranked)
     print(f"\n[跟踪] 本次扫描ID: {scan_id}，已记录 {len(ranked)} 个币种及价格")
 
-    # 输出表格
+    # 信号过滤
+    signals = generate_signals(ranked, signal_config)
+    print(f"[信号] 评分≥{signal_config.min_score} 过滤: {len(ranked)} -> {len(signals)} 个")
+
+    if not signals:
+        print("\n没有达到信号门槛的币种。")
+        return
+
+    # 输出交易建议表格
     table_data = []
-    for i, r in enumerate(ranked, 1):
+    for i, s in enumerate(signals, 1):
         table_data.append([
             i,
-            r["symbol"],
-            f"{r['price']:.4f}",
-            f"{r['market_cap_m']:.1f}" if r["market_cap_m"] > 0 else "-",
-            f"{r['drop_pct'] * 100:.1f}%",
-            f"{r['volume_ratio']:.2f}",
-            r["window_days"],
-            f"{r['score']:.2f}",
+            s.symbol,
+            f"{s.price:.4f}",
+            f"{s.score:.2f}",
+            f"{s.entry_price:.4f}",
+            f"{s.stop_loss_price:.4f}",
+            f"{s.take_profit_price:.4f}",
+            s.hold_days,
         ])
 
-    headers = ["排名", "币种", "价格", "市值(M$)", "跌幅", "缩量比", "天数", "评分"]
-    print(f"\n找到 {len(ranked)} 个底部蓄力形态币种:\n")
+    headers = ["排名", "币种", "价格", "评分", "入场价", "止损价", "止盈价", "持仓天数"]
+    print(f"\n找到 {len(signals)} 个交易信号（止损{signal_config.stop_loss:.0%} / 止盈{signal_config.take_profit:.0%} / 持仓{signal_config.hold_days}天）:\n")
     print(tabulate(table_data, headers=headers, tablefmt="simple"))
 
     # 保存文件
     os.makedirs("results", exist_ok=True)
     ts = datetime.now().strftime("%Y-%m-%d_%H%M%S")
+    json_data = [
+        {
+            "symbol": s.symbol,
+            "price": s.price,
+            "score": s.score,
+            "entry_price": s.entry_price,
+            "stop_loss_price": s.stop_loss_price,
+            "take_profit_price": s.take_profit_price,
+            "hold_days": s.hold_days,
+            "drop_pct": s.drop_pct,
+            "volume_ratio": s.volume_ratio,
+            "window_days": s.window_days,
+        }
+        for s in signals
+    ]
     json_path = f"results/{ts}.json"
     with open(json_path, "w") as f:
-        json.dump(ranked, f, ensure_ascii=False, indent=2)
+        json.dump(json_data, f, ensure_ascii=False, indent=2)
     txt_path = f"results/{ts}.txt"
     with open(txt_path, "w") as f:
         f.write(f"扫描时间: {ts}\n")
-        f.write(f"找到 {len(ranked)} 个底部蓄力形态币种:\n\n")
+        f.write(f"信号参数: 止损{signal_config.stop_loss:.0%} / 止盈{signal_config.take_profit:.0%} / 持仓{signal_config.hold_days}天\n")
+        f.write(f"找到 {len(signals)} 个交易信号:\n\n")
         f.write(tabulate(table_data, headers=headers, tablefmt="simple"))
         f.write("\n")
     print(f"结果已保存到 {json_path} 和 {txt_path}")
@@ -268,7 +300,7 @@ def main():
     parser.add_argument("--days", type=int, default=180, help="回测历史K线天数（默认180）")
     args = parser.parse_args()
 
-    config = load_config(args.config)
+    config, signal_config = load_config(args.config)
 
     if args.track:
         show_tracking()
@@ -277,7 +309,7 @@ def main():
     elif args.backtest:
         run_backtest_cli(config, days=args.days, symbols_override=args.symbols)
     else:
-        run(config, top_n=args.top, symbols_override=args.symbols)
+        run(config, signal_config, top_n=args.top, symbols_override=args.symbols)
 
 
 if __name__ == "__main__":

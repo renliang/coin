@@ -14,3 +14,9 @@ scanner:
   page_delay: 30               # CoinGecko每页间隔秒数
   skip_market_cap_filter: true  # 暂时跳过市值过滤（CoinGecko限速中）
   top_n: 20                    # 输出前N个结果
+
+signal:
+  min_score: 0.6               # 最低评分门槛（回测验证：高分组3d胜率69%）
+  hold_days: 3                 # 建议持仓天数（回测验证：3d最优）
+  stop_loss: 0.05              # 止损比例 5%
+  take_profit: 0.08            # 止盈比例 8%
