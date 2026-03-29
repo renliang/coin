@@ -176,6 +176,139 @@ def run(config: dict, signal_config: SignalConfig, top_n: int | None = None, sym
     print(f"结果已保存到 {json_path} 和 {txt_path}")
 
 
+def run_divergence(config: dict, signal_config: SignalConfig, top_n: int | None = None, symbols_override: list[str] | None = None):
+    from scanner.divergence import detect_divergence
+    top_n = top_n or config.get("top_n", 20)
+    max_market_cap = config.get("max_market_cap", 100_000_000)
+
+    # Step 1: 获取交易对列表
+    if symbols_override:
+        symbols = symbols_override
+        print(f"[1/4] 使用指定的 {len(symbols)} 个交易对")
+    else:
+        print(f"[1/4] 获取OKX永续合约列表（Binance现货有K线的）...")
+        symbols = fetch_futures_symbols()
+        print(f"       共 {len(symbols)} 个合约交易对")
+
+    if not symbols:
+        print("没有找到交易对。")
+        return
+
+    # Step 2: 拉K线（背离模式需要90天）
+    print(f"[2/4] 从Binance拉取K线数据（{len(symbols)}个交易对，90天）...")
+    klines = fetch_klines_batch(symbols, days=90, delay=0.5)
+    print(f"       成功获取 {len(klines)} 个交易对的K线")
+
+    # Step 3: 背离检测
+    print("[3/4] MACD背离检测中...")
+    matches = []
+    for symbol, df in klines.items():
+        result = detect_divergence(df)
+        if result.divergence_type == "none":
+            continue
+        price = float(df["close"].iloc[-1])
+        signal_type = "底背离" if result.divergence_type == "bullish" else "顶背离"
+        matches.append({
+            "symbol": symbol,
+            "price": price,
+            "drop_pct": 0,
+            "volume_ratio": 0,
+            "window_days": result.pivot_distance,
+            "score": result.score,
+            "signal_type": signal_type,
+            "mode": "divergence",
+        })
+
+    print(f"       背离命中 {len(matches)} 个")
+
+    if not matches:
+        print("\n未找到MACD背离的币种。")
+        return
+
+    # Step 4: 市值过滤
+    skip_cap = config.get("skip_market_cap_filter", False)
+    if not symbols_override and not skip_cap:
+        base_symbols = [m["symbol"].split("/")[0] for m in matches]
+        print(f"[4/4] 查询 {len(base_symbols)} 个命中币种的市值...")
+        market_caps = fetch_market_caps(base_symbols, page_delay=config.get("page_delay", 30))
+        for m in matches:
+            base = m["symbol"].split("/")[0]
+            m["market_cap_m"] = market_caps.get(base, 0) / 1e6
+        before = len(matches)
+        matches = [m for m in matches if 0 < m["market_cap_m"] <= max_market_cap / 1e6]
+        print(f"       市值过滤: {before} -> {len(matches)} 个 (< ${max_market_cap / 1e6:.0f}M)")
+    else:
+        print("[4/4] 跳过市值过滤")
+        for m in matches:
+            m["market_cap_m"] = 0
+
+    if not matches:
+        print("\n过滤后没有符合条件的币种。")
+        return
+
+    ranked = rank_results(matches, top_n=top_n)
+
+    # 保存到数据库
+    scan_id = save_scan(ranked, mode="divergence")
+    print(f"\n[跟踪] 本次扫描ID: {scan_id}，已记录 {len(ranked)} 个币种及价格")
+
+    # 信号过滤
+    signals = generate_signals(ranked, signal_config)
+    print(f"[信号] 评分≥{signal_config.min_score} 过滤: {len(ranked)} -> {len(signals)} 个")
+
+    if not signals:
+        print("\n没有达到信号门槛的币种。")
+        return
+
+    # 输出交易建议表格
+    table_data = []
+    for i, s in enumerate(signals, 1):
+        table_data.append([
+            i,
+            s.symbol,
+            s.signal_type,
+            f"{s.price:.4f}",
+            f"{s.score:.2f}",
+            f"{s.entry_price:.4f}",
+            f"{s.stop_loss_price:.4f}",
+            f"{s.take_profit_price:.4f}",
+            s.hold_days,
+        ])
+
+    headers = ["排名", "币种", "类型", "价格", "评分", "入场价", "止损价", "止盈价", "持仓天数"]
+    print(f"\n找到 {len(signals)} 个交易信号（止损{signal_config.stop_loss:.0%} / 止盈{signal_config.take_profit:.0%} / 持仓{signal_config.hold_days}天）:\n")
+    print(tabulate(table_data, headers=headers, tablefmt="simple"))
+
+    # 保存文件
+    os.makedirs("results", exist_ok=True)
+    ts = datetime.now().strftime("%Y-%m-%d_%H%M%S")
+    json_data = [
+        {
+            "symbol": s.symbol,
+            "signal_type": s.signal_type,
+            "price": s.price,
+            "score": s.score,
+            "entry_price": s.entry_price,
+            "stop_loss_price": s.stop_loss_price,
+            "take_profit_price": s.take_profit_price,
+            "hold_days": s.hold_days,
+        }
+        for s in signals
+    ]
+    json_path = f"results/divergence_{ts}.json"
+    with open(json_path, "w") as f:
+        json.dump(json_data, f, ensure_ascii=False, indent=2)
+    txt_path = f"results/divergence_{ts}.txt"
+    with open(txt_path, "w") as f:
+        f.write(f"扫描时间: {ts}\n")
+        f.write(f"模式: MACD背离\n")
+        f.write(f"信号参数: 止损{signal_config.stop_loss:.0%} / 止盈{signal_config.take_profit:.0%} / 持仓{signal_config.hold_days}天\n")
+        f.write(f"找到 {len(signals)} 个交易信号:\n\n")
+        f.write(tabulate(table_data, headers=headers, tablefmt="simple"))
+        f.write("\n")
+    print(f"结果已保存到 {json_path} 和 {txt_path}")
+
+
 def show_tracking():
     """显示所有跟踪中的币种"""
     tracked = get_tracked_symbols()
@@ -290,7 +423,9 @@ def run_backtest_cli(config: dict, days: int, symbols_override: list[str] | None
 
 
 def main():
-    parser = argparse.ArgumentParser(description="币种底部蓄力形态筛选器")
+    parser = argparse.ArgumentParser(description="币种形态筛选器")
+    parser.add_argument("--mode", choices=["accumulation", "divergence"], default="accumulation",
+                        help="扫描模式: accumulation=底部蓄力, divergence=MACD背离")
     parser.add_argument("--top", type=int, help="输出前N个结果")
     parser.add_argument("--config", default="config.yaml", help="配置文件路径")
     parser.add_argument("--symbols", nargs="+", help="直接指定交易对")
@@ -308,6 +443,8 @@ def main():
         show_history(args.history)
     elif args.backtest:
         run_backtest_cli(config, days=args.days, symbols_override=args.symbols)
+    elif args.mode == "divergence":
+        run_divergence(config, signal_config, top_n=args.top, symbols_override=args.symbols)
     else:
         run(config, signal_config, top_n=args.top, symbols_override=args.symbols)
 
