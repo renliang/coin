@@ -21,6 +21,8 @@ class TradeSignal:
     stop_loss_price: float
     take_profit_price: float
     hold_days: int
+    signal_type: str = ""
+    mode: str = ""
 
 
 def generate_signals(
@@ -33,16 +35,28 @@ def generate_signals(
         if m["score"] < signal_config.min_score:
             continue
         price = m["price"]
+        signal_type = m.get("signal_type", "")
+        is_bearish = signal_type == "顶背离"
+
+        if is_bearish:
+            sl_price = price * (1 + signal_config.stop_loss)
+            tp_price = price * (1 - signal_config.take_profit)
+        else:
+            sl_price = price * (1 - signal_config.stop_loss)
+            tp_price = price * (1 + signal_config.take_profit)
+
         signals.append(TradeSignal(
             symbol=m["symbol"],
             price=price,
             score=m["score"],
-            drop_pct=m["drop_pct"],
-            volume_ratio=m["volume_ratio"],
-            window_days=m["window_days"],
+            drop_pct=m.get("drop_pct", 0),
+            volume_ratio=m.get("volume_ratio", 0),
+            window_days=m.get("window_days", 0),
             entry_price=price,
-            stop_loss_price=price * (1 - signal_config.stop_loss),
-            take_profit_price=price * (1 + signal_config.take_profit),
+            stop_loss_price=sl_price,
+            take_profit_price=tp_price,
             hold_days=signal_config.hold_days,
+            signal_type=signal_type,
+            mode=m.get("mode", ""),
         ))
     return signals
