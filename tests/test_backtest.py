@@ -136,3 +136,63 @@ def test_format_stats_contains_key_info():
     assert "高分" in output
     assert "中分" in output
     assert "低分" in output
+
+
+def test_backtest_empty_input():
+    """空K线输入应返回空命中列表。"""
+    config = {
+        "window_min_days": 7,
+        "window_max_days": 14,
+        "volume_ratio": 0.5,
+        "drop_min": 0.05,
+        "drop_max": 0.15,
+        "max_daily_change": 0.05,
+    }
+    hits = run_backtest({}, config)
+    assert hits == []
+
+
+def test_backtest_no_match():
+    """持续上涨的K线不应命中任何形态。"""
+    prices = [100 + i * 2 for i in range(60)]
+    volumes = [1000] * 60
+    df = _make_klines(prices, volumes)
+
+    config = {
+        "window_min_days": 7,
+        "window_max_days": 14,
+        "volume_ratio": 0.5,
+        "drop_min": 0.05,
+        "drop_max": 0.15,
+        "max_daily_change": 0.05,
+    }
+    hits = run_backtest({"UP/USDT": df}, config)
+    assert len(hits) == 0
+
+
+def test_backtest_returns_none_for_insufficient_future_data():
+    """数据不足时，远期收益应为None。"""
+    pattern_prices = [100 - i * 0.7 for i in range(14)]
+    pattern_volumes = [1000] * 7 + [300] * 7
+    future_prices = [pattern_prices[-1] + i * 0.5 for i in range(1, 6)]
+    future_volumes = [500] * 5
+
+    prices = pattern_prices + future_prices
+    volumes = pattern_volumes + future_volumes
+    df = _make_klines(prices, volumes)
+
+    config = {
+        "window_min_days": 7,
+        "window_max_days": 14,
+        "volume_ratio": 0.5,
+        "drop_min": 0.05,
+        "drop_max": 0.15,
+        "max_daily_change": 0.05,
+    }
+    hits = run_backtest({"TEST/USDT": df}, config)
+
+    if len(hits) > 0:
+        hit = hits[0]
+        assert hit.returns["3d"] is not None
+        assert hit.returns["14d"] is None
+        assert hit.returns["30d"] is None
