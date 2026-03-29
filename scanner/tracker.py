@@ -25,6 +25,7 @@ def _get_conn() -> sqlite3.Connection:
             volume_ratio REAL NOT NULL,
             window_days INTEGER NOT NULL,
             score REAL NOT NULL,
+            mode TEXT NOT NULL DEFAULT 'accumulation',
             FOREIGN KEY (scan_id) REFERENCES scans(id)
         )
     """)
@@ -32,7 +33,7 @@ def _get_conn() -> sqlite3.Connection:
     return conn
 
 
-def save_scan(results: list[dict]) -> int:
+def save_scan(results: list[dict], mode: str = "accumulation") -> int:
     """保存一次扫描结果，返回scan_id"""
     conn = _get_conn()
     ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -40,10 +41,10 @@ def save_scan(results: list[dict]) -> int:
     scan_id = cur.lastrowid
     for r in results:
         conn.execute(
-            "INSERT INTO scan_results (scan_id, symbol, price, market_cap_m, drop_pct, volume_ratio, window_days, score) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO scan_results (scan_id, symbol, price, market_cap_m, drop_pct, volume_ratio, window_days, score, mode) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (scan_id, r["symbol"], r["price"], r.get("market_cap_m", 0),
-             r["drop_pct"], r["volume_ratio"], r["window_days"], r["score"]),
+             r["drop_pct"], r["volume_ratio"], r["window_days"], r["score"], mode),
         )
     conn.commit()
     conn.close()
