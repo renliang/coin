@@ -188,6 +188,75 @@ def show_history(symbol: str):
     print(tabulate(table_data, headers=headers, tablefmt="simple"))
 
 
+def run_backtest_cli(config: dict, days: int, symbols_override: list[str] | None = None):
+    """运行回测：拉取历史K线，滑动窗口检测，统计收益。"""
+    from scanner.backtest import run_backtest, compute_stats, format_stats
+
+    # Step 1: 获取交易对列表
+    if symbols_override:
+        symbols = symbols_override
+        print(f"[1/3] 使用指定的 {len(symbols)} 个交易对")
+    else:
+        print(f"[1/3] 获取OKX永续合约列表...")
+        symbols = fetch_futures_symbols()
+        print(f"       共 {len(symbols)} 个合约交易对")
+
+    if not symbols:
+        print("没有找到交易对。")
+        return
+
+    # Step 2: 拉取历史K线
+    print(f"[2/3] 从Binance拉取 {days} 天K线数据（{len(symbols)}个交易对）...")
+    klines = fetch_klines_batch(symbols, days=days, delay=0.5)
+    print(f"       成功获取 {len(klines)} 个交易对的K线")
+
+    # Step 3: 回测
+    print("[3/3] 滑动窗口回扫中...")
+    hits = run_backtest(klines, config)
+    print(f"       总命中 {len(hits)} 次形态")
+
+    if not hits:
+        print("\n历史数据中未检测到底部蓄力形态。")
+        return
+
+    stats = compute_stats(hits)
+    output = format_stats(stats)
+    print(f"\n{output}")
+
+    # 保存结果
+    os.makedirs("results", exist_ok=True)
+    ts = datetime.now().strftime("%Y-%m-%d_%H%M%S")
+
+    json_path = f"results/backtest_{ts}.json"
+    json_data = {
+        "stats": stats,
+        "hits": [
+            {
+                "symbol": h.symbol,
+                "detect_date": h.detect_date,
+                "window_days": h.window_days,
+                "drop_pct": h.drop_pct,
+                "volume_ratio": h.volume_ratio,
+                "score": h.score,
+                "returns": h.returns,
+            }
+            for h in hits
+        ],
+    }
+    with open(json_path, "w") as f:
+        json.dump(json_data, f, ensure_ascii=False, indent=2)
+
+    txt_path = f"results/backtest_{ts}.txt"
+    with open(txt_path, "w") as f:
+        f.write(f"回测时间: {ts}\n")
+        f.write(f"历史天数: {days}\n")
+        f.write(f"币种数: {len(klines)}\n\n")
+        f.write(output)
+        f.write("\n")
+
+    print(f"结果已保存到 {json_path} 和 {txt_path}")
+
+
 def main():
     parser = argparse.ArgumentParser(description="币种底部蓄力形态筛选器")
     parser.add_argument("--top", type=int, help="输出前N个结果")
@@ -195,6 +264,8 @@ def main():
     parser.add_argument("--symbols", nargs="+", help="直接指定交易对")
     parser.add_argument("--track", action="store_true", help="查看所有跟踪中的币种")
     parser.add_argument("--history", type=str, help="查看某币种历史记录，如 ZIL/USDT")
+    parser.add_argument("--backtest", action="store_true", help="运行回测验证形态有效性")
+    parser.add_argument("--days", type=int, default=180, help="回测历史K线天数（默认180）")
     args = parser.parse_args()
 
     config = load_config(args.config)
@@ -203,6 +274,8 @@ def main():
         show_tracking()
     elif args.history:
         show_history(args.history)
+    elif args.backtest:
+        run_backtest_cli(config, days=args.days, symbols_override=args.symbols)
     else:
         run(config, top_n=args.top, symbols_override=args.symbols)
 
