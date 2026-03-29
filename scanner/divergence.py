@@ -31,13 +31,127 @@ def compute_macd(
     return dif, dea, hist
 
 
+def _score_divergence(
+    price_1: float,
+    price_2: float,
+    dif_1: float,
+    dif_2: float,
+    hist: pd.Series,
+    idx_1: int,
+    idx_2: int,
+    div_type: str,
+) -> float:
+    """计算背离评分 [0, 1]。
+
+    三个维度:
+    - 背离强度 (权重0.4): 价格差与DIF差的偏离程度
+    - MACD柱确认 (权重0.3): 第二极值点附近柱状图是否收缩
+    - 时间合理性 (权重0.3): 间距越接近30天越好
+    """
+    # 1. 背离强度: 价格变化率与DIF变化率方向相反的程度
+    price_change = abs(price_2 - price_1) / abs(price_1) if price_1 != 0 else 0
+    dif_change = abs(dif_2 - dif_1) / (abs(dif_1) + 1e-10)
+    strength = min(1.0, (price_change + dif_change) / 0.3)
+
+    # 2. MACD柱确认: 第二极值点附近的柱值是否在回归零轴
+    window = 5
+    start = max(0, idx_2 - window)
+    end = min(len(hist), idx_2 + window + 1)
+    hist_slice = hist.iloc[start:end].values
+    if div_type == "bullish":
+        # 底背离: 柱值应从负回升(值变大)
+        hist_trend = np.mean(np.diff(hist_slice)) if len(hist_slice) > 1 else 0
+        confirm = min(1.0, max(0.0, hist_trend / (abs(hist.iloc[idx_1]) + 1e-10) * 10))
+    else:
+        # 顶背离: 柱值应从正回落(值变小)
+        hist_trend = np.mean(np.diff(hist_slice)) if len(hist_slice) > 1 else 0
+        confirm = min(1.0, max(0.0, -hist_trend / (abs(hist.iloc[idx_1]) + 1e-10) * 10))
+
+    # 3. 时间合理性: 间距接近30天得分最高，线性衰减
+    distance = idx_2 - idx_1
+    time_score = max(0.0, 1.0 - abs(distance - 30) / 30)
+
+    return strength * 0.4 + confirm * 0.3 + time_score * 0.3
+
+
 def detect_divergence(
-    df: "pd.DataFrame",
+    df: pd.DataFrame,
     pivot_len: int = 3,
-    lookback: int = 60,
-) -> "DivergenceResult":
-    """检测MACD背离（占位，后续任务实现）。"""
-    raise NotImplementedError("detect_divergence will be implemented in a future task")
+    min_distance: int = 15,
+    max_distance: int = 60,
+) -> DivergenceResult:
+    """在日K线数据中检测MACD背离。
+
+    需要至少40根K线(26根MACD预热 + 检测空间)。
+    """
+    none_result = DivergenceResult(
+        divergence_type="none",
+        price_1=0, price_2=0,
+        dif_1=0, dif_2=0,
+        pivot_distance=0,
+        score=0.0,
+    )
+
+    if len(df) < 40:
+        return none_result
+
+    closes = df["close"].astype(float)
+    dif, dea, hist = compute_macd(closes)
+
+    # 在MACD预热期之后寻找极值点
+    warmup = 26
+    close_after = closes.iloc[warmup:]
+    lows, highs = find_pivots(close_after, pivot_len=pivot_len)
+
+    # 将索引调整回原始DataFrame
+    lows = [i + warmup for i in lows]
+    highs = [i + warmup for i in highs]
+
+    best_result = none_result
+
+    # 检查底背离: 遍历波谷对
+    for i in range(len(lows) - 1):
+        for j in range(i + 1, len(lows)):
+            idx1, idx2 = lows[i], lows[j]
+            dist = idx2 - idx1
+            if dist < min_distance or dist > max_distance:
+                continue
+            p1, p2 = float(closes.iloc[idx1]), float(closes.iloc[idx2])
+            d1, d2 = float(dif.iloc[idx1]), float(dif.iloc[idx2])
+            # 底背离: 价格创新低，DIF未创新低
+            if p2 < p1 and d2 > d1:
+                score = _score_divergence(p1, p2, d1, d2, hist, idx1, idx2, "bullish")
+                if score > best_result.score:
+                    best_result = DivergenceResult(
+                        divergence_type="bullish",
+                        price_1=p1, price_2=p2,
+                        dif_1=d1, dif_2=d2,
+                        pivot_distance=dist,
+                        score=score,
+                    )
+
+    # 检查顶背离: 遍历波峰对
+    for i in range(len(highs) - 1):
+        for j in range(i + 1, len(highs)):
+            idx1, idx2 = highs[i], highs[j]
+            dist = idx2 - idx1
+            if dist < min_distance or dist > max_distance:
+                continue
+            p1, p2 = float(closes.iloc[idx1]), float(closes.iloc[idx2])
+            d1, d2 = float(dif.iloc[idx1]), float(dif.iloc[idx2])
+            # 顶背离: 价格创新高，DIF未创新高
+            if p2 > p1 and d2 < d1:
+                score = _score_divergence(p1, p2, d1, d2, hist, idx1, idx2, "bearish")
+                if score > best_result.score:
+                    best_result = DivergenceResult(
+                        divergence_type="bearish",
+                        price_1=p1, price_2=p2,
+                        dif_1=d1, dif_2=d2,
+                        pivot_distance=dist,
+                        score=score,
+                    )
+
+    return best_result
 
 
 def find_pivots(
