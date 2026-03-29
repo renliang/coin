@@ -1,57 +1,80 @@
-import numpy as np
 import pandas as pd
-import pytest
-from core.backtest.engine import BacktestEngine, BacktestResult
-from core.strategy.templates.breakout import BreakoutStrategy
-from core.config import RiskConfig
+import numpy as np
+from scanner.backtest import run_backtest, BacktestHit
 
 
-def make_sinusoidal_df(n=300):
-    """生成带趋势的正弦波价格数据"""
-    t = np.linspace(0, 6 * np.pi, n)
-    prices = 100 + 20 * np.sin(t) + t * 0.5
+def _make_klines(prices: list[float], volumes: list[float]) -> pd.DataFrame:
+    """构造合成K线DataFrame。"""
+    n = len(prices)
     return pd.DataFrame({
-        "open": prices * 0.999,
-        "high": prices * 1.005,
-        "low": prices * 0.995,
+        "timestamp": pd.date_range("2026-01-01", periods=n, freq="D"),
+        "open": prices,
+        "high": [p * 1.01 for p in prices],
+        "low": [p * 0.99 for p in prices],
         "close": prices,
-        "volume": [1000.0] * n,
-    }, index=pd.date_range("2024-01-01", periods=n, freq="1h"))
+        "volume": volumes,
+    })
 
 
-def test_backtest_runs_without_error():
-    strategy = BreakoutStrategy("b1", "BTC-USDT-SWAP", "1h", params={"lookback": 10})
-    risk = RiskConfig(max_risk_per_trade=0.01, max_open_positions=1, daily_loss_limit=0.2, max_leverage=5.0)
-    engine = BacktestEngine(strategy, risk, initial_balance=10000.0)
-    result = engine.run(make_sinusoidal_df())
-    assert isinstance(result, BacktestResult)
+def test_run_backtest_detects_pattern():
+    """构造一段明确的底部蓄力形态 + 后续上涨，验证能检测到并计算收益。"""
+    n_pattern = 14
+    n_future = 30
+    pattern_prices = [100 - i * 0.7 for i in range(n_pattern)]
+    pattern_volumes = [1000] * 7 + [300] * 7
+    future_prices = [pattern_prices[-1] + i * 0.33 for i in range(1, n_future + 1)]
+    future_volumes = [500] * n_future
+
+    prices = pattern_prices + future_prices
+    volumes = pattern_volumes + future_volumes
+    df = _make_klines(prices, volumes)
+
+    config = {
+        "window_min_days": 7,
+        "window_max_days": 14,
+        "volume_ratio": 0.5,
+        "drop_min": 0.05,
+        "drop_max": 0.15,
+        "max_daily_change": 0.05,
+    }
+    hits = run_backtest({"TEST/USDT": df}, config)
+
+    assert len(hits) >= 1
+    hit = hits[0]
+    assert isinstance(hit, BacktestHit)
+    assert hit.symbol == "TEST/USDT"
+    assert hit.score > 0
+    assert hit.returns["3d"] is not None
+    assert hit.returns["3d"] > 0
 
 
-def test_backtest_result_properties():
-    strategy = BreakoutStrategy("b1", "BTC-USDT-SWAP", "1h", params={"lookback": 10})
-    risk = RiskConfig(max_risk_per_trade=0.01, max_open_positions=1, daily_loss_limit=0.2, max_leverage=5.0)
-    engine = BacktestEngine(strategy, risk, initial_balance=10000.0)
-    result = engine.run(make_sinusoidal_df(300))
-    assert 0.0 <= result.win_rate <= 1.0
-    assert result.max_drawdown >= 0.0
-    assert isinstance(result.total_return, float)
+def test_run_backtest_dedup_adjacent_hits():
+    """连续命中的形态只保留第一次，间隔不足 window_max_days 的跳过。"""
+    seg1_prices = [100 - i * 0.7 for i in range(14)]
+    seg1_volumes = [1000] * 7 + [300] * 7
+    gap_prices = [seg1_prices[-1]] * 5
+    gap_volumes = [300] * 5
+    seg2_start = gap_prices[-1]
+    seg2_prices = [seg2_start - i * 0.7 for i in range(14)]
+    seg2_volumes = [1000] * 7 + [300] * 7
+    future_prices = [seg2_prices[-1] + i * 0.5 for i in range(1, 31)]
+    future_volumes = [500] * 30
 
+    prices = seg1_prices + gap_prices + seg2_prices + future_prices
+    volumes = seg1_volumes + gap_volumes + seg2_volumes + future_volumes
+    df = _make_klines(prices, volumes)
 
-def test_backtest_sharpe_and_annualized():
-    strategy = BreakoutStrategy("b1", "BTC-USDT-SWAP", "1h", params={"lookback": 10})
-    risk = RiskConfig(max_risk_per_trade=0.01, max_open_positions=1, daily_loss_limit=0.2, max_leverage=5.0)
-    engine = BacktestEngine(strategy, risk, initial_balance=10000.0)
-    result = engine.run(make_sinusoidal_df(300))
-    assert isinstance(result.sharpe_ratio, float)
-    assert isinstance(result.annualized_return, float)
+    config = {
+        "window_min_days": 7,
+        "window_max_days": 14,
+        "volume_ratio": 0.5,
+        "drop_min": 0.05,
+        "drop_max": 0.15,
+        "max_daily_change": 0.05,
+    }
+    hits = run_backtest({"TEST/USDT": df}, config)
 
-
-def test_backtest_with_no_signals():
-    """数据太少时不应崩溃"""
-    from core.strategy.templates.momentum import MomentumStrategy
-    strategy = MomentumStrategy("m1", "BTC-USDT-SWAP", "1h")
-    risk = RiskConfig()
-    engine = BacktestEngine(strategy, risk)
-    short_df = make_sinusoidal_df(10)
-    result = engine.run(short_df)
-    assert len(result.trades) == 0
+    for i in range(1, len(hits)):
+        date_a = pd.Timestamp(hits[i - 1].detect_date)
+        date_b = pd.Timestamp(hits[i].detect_date)
+        assert (date_b - date_a).days >= 14
