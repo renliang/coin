@@ -1,6 +1,6 @@
 import pandas as pd
 import numpy as np
-from scanner.backtest import run_backtest, BacktestHit, compute_stats
+from scanner.backtest import run_backtest, BacktestHit, compute_stats, format_stats
 
 
 def _make_klines(prices: list[float], volumes: list[float]) -> pd.DataFrame:
@@ -118,3 +118,21 @@ def test_compute_stats_by_score_tier():
     assert tiers["low"]["3d"]["count"] == 1
     assert tiers["high"]["3d"]["win_rate"] == 1.0
     assert tiers["low"]["3d"]["win_rate"] == 1.0
+
+
+def test_format_stats_contains_key_info():
+    """验证格式化输出包含关键信息。"""
+    hits = [
+        BacktestHit("A/USDT", "2026-01-15", 14, 0.10, 0.3, 0.65,
+                     {"3d": 0.05, "7d": 0.10, "14d": 0.15, "30d": 0.20}),
+    ]
+    stats = compute_stats(hits)
+    output = format_stats(stats)
+
+    assert "整体统计" in output
+    assert "3d" in output
+    assert "7d" in output
+    assert "胜率" in output
+    assert "高分" in output
+    assert "中分" in output
+    assert "低分" in output

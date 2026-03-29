@@ -2,6 +2,7 @@ from dataclasses import dataclass, field
 
 import numpy as np
 import pandas as pd
+from tabulate import tabulate
 
 from scanner.detector import detect_pattern
 from scanner.scorer import score_result
@@ -128,3 +129,49 @@ def compute_stats(hits: list[BacktestHit]) -> dict:
         "overall": overall,
         "by_tier": by_tier,
     }
+
+
+def format_stats(stats: dict) -> str:
+    """格式化统计结果为终端表格字符串。"""
+    lines = []
+    lines.append(f"总命中次数: {stats['total_hits']}")
+    lines.append("")
+
+    lines.append("=== 整体统计 ===")
+    lines.append("")
+    table = []
+    for period in ["3d", "7d", "14d", "30d"]:
+        s = stats["overall"][period]
+        table.append([
+            period,
+            s["count"],
+            f"{s['win_rate']:.1%}",
+            f"{s['mean']:.2%}",
+            f"{s['median']:.2%}",
+            f"{s['max']:.2%}",
+            f"{s['min']:.2%}",
+        ])
+    headers = ["周期", "样本数", "胜率", "平均收益", "中位数", "最大收益", "最大亏损"]
+    lines.append(tabulate(table, headers=headers, tablefmt="simple"))
+    lines.append("")
+
+    tier_names = {"high": "高分(≥0.6)", "mid": "中分(0.4-0.6)", "low": "低分(<0.4)"}
+    for tier_key, tier_label in tier_names.items():
+        lines.append(f"=== {tier_label} ===")
+        lines.append("")
+        table = []
+        for period in ["3d", "7d", "14d", "30d"]:
+            s = stats["by_tier"][tier_key][period]
+            table.append([
+                period,
+                s["count"],
+                f"{s['win_rate']:.1%}",
+                f"{s['mean']:.2%}",
+                f"{s['median']:.2%}",
+                f"{s['max']:.2%}",
+                f"{s['min']:.2%}",
+            ])
+        lines.append(tabulate(table, headers=headers, tablefmt="simple"))
+        lines.append("")
+
+    return "\n".join(lines)
