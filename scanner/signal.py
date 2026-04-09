@@ -8,7 +8,7 @@ class SignalConfig:
     stop_loss: float = 0.05
     take_profit: float = 0.08
     confirmation: bool = True
-    confirmation_min_pass: int = 3
+    confirmation_min_pass: int = 4
 
 
 @dataclass

@@ -21,7 +21,7 @@ signal:
   stop_loss: 0.05              # 止损比例 5%
   take_profit: 0.08            # 止盈比例 8%
   confirmation: true              # 是否启用确认层
-  confirmation_min_pass: 3        # 4项中至少通过几项
+  confirmation_min_pass: 4        # 6项中至少通过几项
 
 # 新币观察清单（--mode new）；与 accumulation 扫描器参数独立
 # 条数少≠bug：只统计 Binance U本位永续∩Binance 现货，并套上下面天数/成交额/排除规则；top_n 是输出上限。
