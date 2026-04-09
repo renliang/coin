@@ -51,7 +51,7 @@ def _score_divergence(
     # 1. 背离强度: 价格变化率与DIF变化率方向相反的程度
     price_change = abs(price_2 - price_1) / abs(price_1) if price_1 != 0 else 0
     dif_change = abs(dif_2 - dif_1) / (abs(dif_1) + 1e-10)
-    strength = min(1.0, (price_change + dif_change) / 0.3)
+    strength = min(1.0, (price_change + dif_change) / 1.0)
 
     # 2. MACD柱确认: 第二极值点附近的柱值是否在回归零轴
     window = 5
@@ -71,14 +71,15 @@ def _score_divergence(
     distance = idx_2 - idx_1
     time_score = max(0.0, 1.0 - abs(distance - 30) / 30)
 
-    return strength * 0.4 + confirm * 0.3 + time_score * 0.3
+    return strength * 0.5 + confirm * 0.3 + time_score * 0.2
 
 
 def detect_divergence(
     df: pd.DataFrame,
-    pivot_len: int = 3,
+    pivot_len: int = 7,
     min_distance: int = 15,
     max_distance: int = 60,
+    min_price_diff: float = 0.05,
 ) -> DivergenceResult:
     """在日K线数据中检测MACD背离。
 
@@ -118,8 +119,8 @@ def detect_divergence(
                 continue
             p1, p2 = float(closes.iloc[idx1]), float(closes.iloc[idx2])
             d1, d2 = float(dif.iloc[idx1]), float(dif.iloc[idx2])
-            # 底背离: 价格创新低，DIF未创新低
-            if p2 < p1 and d2 > d1:
+            # 底背离: 价格创新低（差距≥min_price_diff），DIF未创新低
+            if p2 < p1 and d2 > d1 and (p1 - p2) / p1 >= min_price_diff:
                 score = _score_divergence(p1, p2, d1, d2, hist, idx1, idx2, "bullish")
                 if score > best_result.score:
                     best_result = DivergenceResult(
@@ -139,8 +140,8 @@ def detect_divergence(
                 continue
             p1, p2 = float(closes.iloc[idx1]), float(closes.iloc[idx2])
             d1, d2 = float(dif.iloc[idx1]), float(dif.iloc[idx2])
-            # 顶背离: 价格创新高，DIF未创新高
-            if p2 > p1 and d2 < d1:
+            # 顶背离: 价格创新高（差距≥min_price_diff），DIF未创新高
+            if p2 > p1 and d2 < d1 and (p2 - p1) / p1 >= min_price_diff:
                 score = _score_divergence(p1, p2, d1, d2, hist, idx1, idx2, "bearish")
                 if score > best_result.score:
                     best_result = DivergenceResult(
