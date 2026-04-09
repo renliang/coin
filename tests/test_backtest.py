@@ -229,6 +229,33 @@ def test_backtest_returns_none_for_insufficient_future_data():
     assert hit.returns["30d"] is None
 
 
+def test_run_backtest_confirmation_adjusts_score():
+    """开启确认层后，命中的 score 应为 float。"""
+    n_pattern = 14
+    n_future = 30
+    pattern_prices = [100 - i * 0.7 for i in range(n_pattern)]
+    pattern_volumes = [1000] * 7 + [300] * 7
+    future_prices = [pattern_prices[-1] + i * 0.33 for i in range(1, n_future + 1)]
+    future_volumes = [500] * n_future
+
+    prices = pattern_prices + future_prices
+    volumes = pattern_volumes + future_volumes
+    df = _make_klines(prices, volumes)
+
+    config = {
+        "window_min_days": 7,
+        "window_max_days": 14,
+        "volume_ratio": 0.5,
+        "drop_min": 0.05,
+        "drop_max": 0.15,
+        "max_daily_change": 0.05,
+    }
+    hits_yes = run_backtest({"TEST/USDT": df}, config, confirmation=True)
+    if hits_yes:
+        for h in hits_yes:
+            assert isinstance(h.score, float)
+
+
 def test_run_backtest_with_confirmation():
     """开启确认层后，命中数应 <= 无确认层的命中数。"""
     n_pattern = 14

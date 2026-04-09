@@ -65,14 +65,16 @@ def run_backtest(
             if not result.matched:
                 continue
 
-            # 确认层过滤
+            last_hit_idx = i
+            score = score_result(result, drop_min=drop_min, drop_max=drop_max, max_daily_change=max_daily)
+
+            # 确认层过滤 + 加分
             if confirmation:
                 conf = confirm_signal(slice_df, "long", confirmation_min_pass)
                 if not conf.passed:
+                    last_hit_idx = -window_max  # 重置，允许后续重新检测
                     continue
-
-            last_hit_idx = i
-            score = score_result(result, drop_min=drop_min, drop_max=drop_max, max_daily_change=max_daily)
+                score = score + conf.bonus
             base_price = closes[i - 1]
             detect_date = str(pd.Timestamp(dates[i - 1]).date())
 
