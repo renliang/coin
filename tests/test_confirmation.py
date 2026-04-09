@@ -126,7 +126,7 @@ def test_confirm_long_all_pass():
     prices = [20 - i * 0.2 for i in range(20)] + [16 + i * 0.15 for i in range(10)]
     vols = [200.0] * 20 + [400.0] * 10
     df = _make_df(prices, vols)
-    result = confirm_signal(df, "long", min_pass=3)
+    result = confirm_signal(df, "long", min_pass=4)
     assert result.passed is True
     assert result.passed_count >= 3
 
@@ -137,7 +137,7 @@ def test_confirm_long_fail_obv_and_volume():
     prices = [20 - i * 0.3 for i in range(20)] + [14 - i * 0.2 for i in range(10)]
     vols = [200.0] * 20 + [500.0] * 10
     df = _make_df(prices, vols)
-    result = confirm_signal(df, "long", min_pass=3)
+    result = confirm_signal(df, "long", min_pass=4)
     assert result.passed is False
     assert result.obv_ok is False
 
@@ -148,7 +148,7 @@ def test_confirm_short_pass():
     prices = [10 + i * 0.2 for i in range(20)] + [14 - i * 0.15 for i in range(10)]
     vols = [200.0] * 20 + [400.0] * 10
     df = _make_df(prices, vols)
-    result = confirm_signal(df, "short", min_pass=3)
+    result = confirm_signal(df, "short", min_pass=4)
     assert result.passed is True
 
 
@@ -210,3 +210,46 @@ def test_atr_accel_insufficient_data():
         recent_days=7, baseline_days=14,
     )
     assert accel == 1.0
+
+
+def test_confirm_signal_returns_score_and_bonus():
+    """confirm_signal 应返回 score 和 bonus 字段。"""
+    prices = [20 - i * 0.2 for i in range(20)] + [16 + i * 0.15 for i in range(10)]
+    vols = [200.0] * 20 + [400.0] * 10
+    df = _make_df(prices, vols)
+    result = confirm_signal(df, "long", min_pass=4)
+    assert hasattr(result, "score")
+    assert hasattr(result, "bonus")
+    assert 0.0 <= result.score <= 1.0
+    assert -0.10 <= result.bonus <= 0.10
+
+
+def test_confirm_signal_high_score_positive_bonus():
+    """强确认信号（放量反弹）应给正加分。"""
+    prices = [20 - i * 0.2 for i in range(20)] + [16 + i * 0.15 for i in range(10)]
+    vols = [100.0] * 20 + [500.0] * 10
+    df = _make_df(prices, vols)
+    result = confirm_signal(df, "long", min_pass=4)
+    assert result.score > 0.5
+    assert result.bonus > 0
+
+
+def test_confirm_signal_weak_gives_negative_bonus():
+    """弱确认（持续下跌缩量）应给负加分。"""
+    prices = [20 - i * 0.3 for i in range(20)] + [14 - i * 0.2 for i in range(10)]
+    vols = [500.0] * 20 + [50.0] * 10
+    df = _make_df(prices, vols)
+    result = confirm_signal(df, "long", min_pass=4)
+    assert result.bonus < 0
+
+
+def test_confirm_signal_has_surge_and_atr_fields():
+    """结果应包含 volume_surge_ok 和 atr_accel_ok 字段。"""
+    prices = [20 - i * 0.2 for i in range(20)] + [16 + i * 0.15 for i in range(10)]
+    vols = [200.0] * 20 + [400.0] * 10
+    df = _make_df(prices, vols)
+    result = confirm_signal(df, "long", min_pass=4)
+    assert hasattr(result, "volume_surge_ok")
+    assert hasattr(result, "atr_accel_ok")
+    assert "volume_surge" in result.details
+    assert "atr_accel" in result.details

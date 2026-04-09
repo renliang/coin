@@ -8,11 +8,15 @@ import pandas as pd
 class ConfirmationResult:
     """信号确认结果。"""
     passed: bool
+    passed_count: int
+    score: float           # 确认层连续得分 [0, 1]
+    bonus: float           # 加分值 [-0.10, +0.10]
     rsi_ok: bool
     obv_ok: bool
     volume_ratio_ok: bool
     mfi_ok: bool
-    passed_count: int
+    volume_surge_ok: bool
+    atr_accel_ok: bool
     details: dict
 
 
@@ -141,28 +145,32 @@ def compute_atr_accel(
 def confirm_signal(
     df: pd.DataFrame,
     direction: str,
-    min_pass: int = 3,
+    min_pass: int = 4,
 ) -> ConfirmationResult:
-    """对候选信号做多指标确认。
+    """对候选信号做多指标确认，返回连续评分和加分。
 
     Args:
         df: K线 DataFrame (需含 open/high/low/close/volume)
         direction: "long" 或 "short"
-        min_pass: 4项检查中至少通过几项才算确认通过
+        min_pass: 6项检查中至少通过几项才算确认通过
 
     Returns:
-        ConfirmationResult
+        ConfirmationResult (含 score 和 bonus)
     """
     closes = df["close"].astype(float)
     highs = df["high"].astype(float)
     lows = df["low"].astype(float)
     volumes = df["volume"].astype(float)
 
+    # 计算原始指标值
     rsi = compute_rsi(closes, period=14)
     obv_trend = compute_obv_trend(closes, volumes, days=7)
     vol_ratio = compute_up_down_volume_ratio(closes, volumes, days=7)
     mfi = compute_mfi(highs, lows, closes, volumes, period=14)
+    surge = compute_volume_surge(volumes, recent_days=3, baseline_days=7)
+    accel = compute_atr_accel(highs, lows, closes, recent_days=7, baseline_days=14)
 
+    # --- bool 判断（用于过滤） ---
     if direction == "long":
         rsi_ok = 30 <= rsi <= 70
         obv_ok = obv_trend > 0
@@ -173,21 +181,61 @@ def confirm_signal(
         obv_ok = obv_trend < 0
         volume_ratio_ok = vol_ratio <= 1.0
         mfi_ok = 20 <= mfi <= 80
+    volume_surge_ok = surge >= 1.5
+    atr_accel_ok = accel > 1.2
 
-    checks = [bool(rsi_ok), bool(obv_ok), bool(volume_ratio_ok), bool(mfi_ok)]
+    checks = [bool(rsi_ok), bool(obv_ok), bool(volume_ratio_ok),
+              bool(mfi_ok), bool(volume_surge_ok), bool(atr_accel_ok)]
     passed_count = sum(checks)
+
+    # --- 连续分计算 [0, 1] ---
+    rsi_score = max(0.0, 1.0 - abs(rsi - 50) / 50)
+
+    total_obv = abs(compute_obv_trend(closes, volumes, days=len(closes) - 1)) + 1e-10
+    obv_raw = min(1.0, max(0.0, abs(obv_trend) / total_obv * 10))
+    if (direction == "long" and obv_trend > 0) or (direction == "short" and obv_trend < 0):
+        obv_score = obv_raw
+    else:
+        obv_score = 1.0 - obv_raw
+
+    if direction == "long":
+        vr_score = min(1.0, vol_ratio / 2.0) if vol_ratio != float("inf") else 1.0
+    else:
+        if vol_ratio == float("inf"):
+            vr_score = 0.0
+        elif vol_ratio == 0:
+            vr_score = 1.0
+        else:
+            vr_score = min(1.0, (1.0 / vol_ratio) / 2.0)
+
+    mfi_score = max(0.0, 1.0 - abs(mfi - 50) / 50)
+    surge_score = min(1.0, max(0.0, (surge - 1.0) / 1.0))
+    accel_score = min(1.0, max(0.0, (accel - 1.0) / 0.5))
+
+    # 6 项均分
+    confirmation_score = (rsi_score + obv_score + vr_score + mfi_score + surge_score + accel_score) / 6.0
+
+    # 加分：以 0.5 为中性，最大 ±0.10
+    bonus = (confirmation_score - 0.5) * 0.2
+    bonus = max(-0.10, min(0.10, bonus))
 
     return ConfirmationResult(
         passed=passed_count >= min_pass,
+        passed_count=passed_count,
+        score=round(confirmation_score, 4),
+        bonus=round(bonus, 4),
         rsi_ok=checks[0],
         obv_ok=checks[1],
         volume_ratio_ok=checks[2],
         mfi_ok=checks[3],
-        passed_count=passed_count,
+        volume_surge_ok=checks[4],
+        atr_accel_ok=checks[5],
         details={
             "rsi": round(rsi, 1),
             "obv_7d": round(obv_trend, 2),
             "up_down_vol_ratio": round(vol_ratio, 2) if vol_ratio != float("inf") else "inf",
             "mfi": round(mfi, 1),
+            "volume_surge": round(surge, 2),
+            "atr_accel": round(accel, 2),
         },
     )
