@@ -174,3 +174,39 @@ def test_volume_surge_insufficient_data():
     volumes = pd.Series([100.0] * 5)
     surge = compute_volume_surge(volumes, recent_days=3, baseline_days=7)
     assert surge == 1.0
+
+
+from scanner.confirmation import compute_atr_accel
+
+
+def test_atr_accel_expanding_volatility():
+    """近期波幅扩大 -> accel > 1.0。"""
+    n = 22  # 7 recent + 14 baseline + 1 for shift
+    # 前14日：窄幅波动
+    highs = [10.5] * 15 + [12.0] * 7
+    lows = [9.5] * 15 + [8.0] * 7
+    closes = [10.0] * 15 + [10.0] * 7
+    accel = compute_atr_accel(
+        pd.Series(highs), pd.Series(lows), pd.Series(closes),
+        recent_days=7, baseline_days=14,
+    )
+    assert accel > 1.0
+
+
+def test_atr_accel_stable():
+    """波幅不变 -> accel ≈ 1.0。"""
+    n = 22
+    highs = pd.Series([10.5] * n)
+    lows = pd.Series([9.5] * n)
+    closes = pd.Series([10.0] * n)
+    accel = compute_atr_accel(highs, lows, closes, recent_days=7, baseline_days=14)
+    assert abs(accel - 1.0) < 0.1
+
+
+def test_atr_accel_insufficient_data():
+    """数据不足 -> 返回 1.0。"""
+    accel = compute_atr_accel(
+        pd.Series([10.5] * 5), pd.Series([9.5] * 5), pd.Series([10.0] * 5),
+        recent_days=7, baseline_days=14,
+    )
+    assert accel == 1.0

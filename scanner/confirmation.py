@@ -99,6 +99,45 @@ def compute_volume_surge(
     return float(recent_avg / baseline_avg)
 
 
+def compute_atr_accel(
+    highs: pd.Series,
+    lows: pd.Series,
+    closes: pd.Series,
+    recent_days: int = 7,
+    baseline_days: int = 14,
+) -> float:
+    """计算近 recent_days ATR / 前 baseline_days ATR。
+
+    返回比值（1.0=无变化，>1.2=波动加速）。数据不足返回 1.0。
+    """
+    if len(closes) < recent_days + baseline_days + 1:
+        return 1.0
+
+    def _atr(h: pd.Series, l: pd.Series, c: pd.Series) -> float:
+        prev_c = c.shift(1)
+        tr = pd.concat([
+            h - l,
+            (h - prev_c).abs(),
+            (l - prev_c).abs(),
+        ], axis=1).max(axis=1)
+        return float(tr.mean())
+
+    cut = -(recent_days + baseline_days)
+    recent_atr = _atr(
+        highs.iloc[-recent_days:],
+        lows.iloc[-recent_days:],
+        closes.iloc[-(recent_days + 1):],
+    )
+    baseline_atr = _atr(
+        highs.iloc[cut:-recent_days],
+        lows.iloc[cut:-recent_days],
+        closes.iloc[cut - 1:-recent_days],
+    )
+    if baseline_atr == 0:
+        return 1.0
+    return float(recent_atr / baseline_atr)
+
+
 def confirm_signal(
     df: pd.DataFrame,
     direction: str,
