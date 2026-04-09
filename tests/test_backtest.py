@@ -1,6 +1,14 @@
 import pandas as pd
 import numpy as np
-from scanner.backtest import run_backtest, BacktestHit, compute_stats, format_stats
+from scanner.backtest import (
+    run_backtest,
+    BacktestHit,
+    compute_stats,
+    format_stats,
+    split_hits_by_median_date,
+    compute_signal_verification_splits,
+    format_signal_verification,
+)
 
 
 def _make_klines(prices: list[float], volumes: list[float]) -> pd.DataFrame:
@@ -170,6 +178,29 @@ def test_backtest_no_match():
     assert len(hits) == 0
 
 
+def test_split_hits_by_median_date():
+    hits = [
+        BacktestHit("A/USDT", "2026-01-01", 14, 0.1, 0.3, 0.7, {"3d": 0.01}),
+        BacktestHit("B/USDT", "2026-03-01", 14, 0.1, 0.3, 0.7, {"3d": 0.02}),
+    ]
+    early, late = split_hits_by_median_date(hits)
+    assert len(early) == 1 and early[0].symbol == "A/USDT"
+    assert len(late) == 1 and late[0].symbol == "B/USDT"
+
+
+def test_compute_signal_verification_splits():
+    hits = [
+        BacktestHit("A/USDT", "2026-01-01", 14, 0.1, 0.3, 0.65, {"3d": 0.05}),
+        BacktestHit("B/USDT", "2026-02-01", 14, 0.1, 0.3, 0.65, {"3d": -0.02}),
+        BacktestHit("C/USDT", "2026-03-01", 14, 0.1, 0.3, 0.35, {"3d": 0.01}),
+    ]
+    sv = compute_signal_verification_splits(hits, min_score=0.6, period="3d")
+    assert sv["full"]["count"] == 2
+    txt = format_signal_verification(sv)
+    assert "Signal 分段验证" in txt
+    assert "后半段" in txt
+
+
 def test_backtest_returns_none_for_insufficient_future_data():
     """数据不足时，远期收益应为None。"""
     pattern_prices = [100 - i * 0.7 for i in range(14)]
@@ -196,3 +227,29 @@ def test_backtest_returns_none_for_insufficient_future_data():
     assert hit.returns["3d"] is not None
     assert hit.returns["14d"] is None
     assert hit.returns["30d"] is None
+
+
+def test_run_backtest_with_confirmation():
+    """开启确认层后，命中数应 <= 无确认层的命中数。"""
+    n_pattern = 14
+    n_future = 30
+    pattern_prices = [100 - i * 0.7 for i in range(n_pattern)]
+    pattern_volumes = [1000] * 7 + [300] * 7
+    future_prices = [pattern_prices[-1] + i * 0.33 for i in range(1, n_future + 1)]
+    future_volumes = [500] * n_future
+
+    prices = pattern_prices + future_prices
+    volumes = pattern_volumes + future_volumes
+    df = _make_klines(prices, volumes)
+
+    config = {
+        "window_min_days": 7,
+        "window_max_days": 14,
+        "volume_ratio": 0.5,
+        "drop_min": 0.05,
+        "drop_max": 0.15,
+        "max_daily_change": 0.05,
+    }
+    hits_no_confirm = run_backtest({"TEST/USDT": df}, config, confirmation=False)
+    hits_with_confirm = run_backtest({"TEST/USDT": df}, config, confirmation=True)
+    assert len(hits_with_confirm) <= len(hits_no_confirm)

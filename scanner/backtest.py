@@ -4,6 +4,7 @@ import numpy as np
 import pandas as pd
 from tabulate import tabulate
 
+from scanner.confirmation import confirm_signal
 from scanner.detector import detect_pattern
 from scanner.scorer import score_result
 
@@ -25,6 +26,8 @@ class BacktestHit:
 def run_backtest(
     klines: dict[str, pd.DataFrame],
     config: dict,
+    confirmation: bool = False,
+    confirmation_min_pass: int = 3,
 ) -> list[BacktestHit]:
     """对所有币种做滑动窗口回扫，返回命中列表。"""
     window_min = config.get("window_min_days", 7)
@@ -61,6 +64,12 @@ def run_backtest(
 
             if not result.matched:
                 continue
+
+            # 确认层过滤
+            if confirmation:
+                conf = confirm_signal(slice_df, "long", confirmation_min_pass)
+                if not conf.passed:
+                    continue
 
             last_hit_idx = i
             score = score_result(result, drop_min=drop_min, drop_max=drop_max, max_daily_change=max_daily)
@@ -129,6 +138,63 @@ def compute_stats(hits: list[BacktestHit]) -> dict:
         "overall": overall,
         "by_tier": by_tier,
     }
+
+
+def split_hits_by_median_date(hits: list[BacktestHit]) -> tuple[list[BacktestHit], list[BacktestHit]]:
+    """按检测日期中位数将命中分为前半段与后半段（用于简易样本外/分段对比）。
+
+    日期少于 2 条时，后半段为空列表。
+    """
+    if len(hits) < 2:
+        return hits, []
+    dated = sorted(hits, key=lambda h: h.detect_date)
+    mid = len(dated) // 2
+    return dated[:mid], dated[mid:]
+
+
+def compute_tier_period_stat(hits: list[BacktestHit], tier_min_score: float, period: str) -> dict:
+    """计算 score >= tier_min_score 的子集在某个持有周期上的统计（与 signal 门槛对齐）。"""
+    sub = [h for h in hits if h.score >= tier_min_score]
+    return _calc_period_stats(sub, period)
+
+
+def compute_signal_verification_splits(
+    hits: list[BacktestHit],
+    min_score: float = 0.6,
+    period: str = "3d",
+) -> dict:
+    """分段对比「高分档」在指定周期上的胜率/均值，便于核对样本外表现。
+
+    返回 early/late/full 三组统计，对应 median 前/后/全部。
+    """
+    early, late = split_hits_by_median_date(hits)
+    return {
+        "period": period,
+        "min_score": min_score,
+        "full": compute_tier_period_stat(hits, min_score, period),
+        "early_window": compute_tier_period_stat(early, min_score, period),
+        "late_window": compute_tier_period_stat(late, min_score, period),
+        "early_hits": len(early),
+        "late_hits": len(late),
+    }
+
+
+def format_signal_verification(sv: dict) -> str:
+    """格式化分段 signal 验证结果。"""
+    lines = [
+        f"=== Signal 分段验证 (score≥{sv['min_score']}, {sv['period']}) ===",
+        f"前半段命中数: {sv['early_hits']}, 后半段命中数: {sv['late_hits']}",
+        "",
+    ]
+    for label, key in [("全部", "full"), ("前半段(较早)", "early_window"), ("后半段(较晚/近似样本外)", "late_window")]:
+        s = sv[key]
+        lines.append(
+            f"{label}: count={s['count']}, win_rate={s['win_rate']:.1%}, "
+            f"mean={s['mean']:.2%}, median={s['median']:.2%}",
+        )
+    lines.append("")
+    lines.append("说明: 后半段统计在命中数较多时可作简易样本外参考；若后半段明显弱于前半段，需警惕过拟合。")
+    return "\n".join(lines)
 
 
 def format_stats(stats: dict) -> str:
