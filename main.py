@@ -128,19 +128,24 @@ def run(config: dict, signal_config: SignalConfig, top_n: int | None = None, sym
 
     ranked = rank_results(matches, top_n=top_n)
 
-    # 确认层过滤
+    # 确认层过滤 + 加分
     if signal_config.confirmation:
         confirmed = []
         filtered_names = []
         for m in ranked:
             result = confirm_signal(klines[m["symbol"]], "long", signal_config.confirmation_min_pass)
             if result.passed:
+                m["base_score"] = m["score"]
+                m["confirm_bonus"] = result.bonus
+                m["score"] = round(m["base_score"] + result.bonus, 4)
                 confirmed.append(m)
             else:
                 filtered_names.append(m["symbol"])
         if filtered_names:
             print(f"[确认] {len(ranked)} -> {len(confirmed)} 个 (过滤: {', '.join(filtered_names[:5])}{'...' if len(filtered_names) > 5 else ''})")
         ranked = confirmed
+        # 按新分数重新排序
+        ranked.sort(key=lambda x: x["score"], reverse=True)
 
     if not ranked:
         print("\n确认层过滤后没有剩余信号。")
@@ -279,7 +284,7 @@ def run_divergence(config: dict, signal_config: SignalConfig, top_n: int | None 
 
     ranked = rank_results(matches, top_n=top_n)
 
-    # 确认层过滤
+    # 确认层过滤 + 加分
     if signal_config.confirmation:
         confirmed = []
         filtered_names = []
@@ -287,12 +292,17 @@ def run_divergence(config: dict, signal_config: SignalConfig, top_n: int | None 
             direction = "short" if m.get("signal_type") == "顶背离" else "long"
             result = confirm_signal(klines[m["symbol"]], direction, signal_config.confirmation_min_pass)
             if result.passed:
+                m["base_score"] = m["score"]
+                m["confirm_bonus"] = result.bonus
+                m["score"] = round(m["base_score"] + result.bonus, 4)
                 confirmed.append(m)
             else:
                 filtered_names.append(m["symbol"])
         if filtered_names:
             print(f"[确认] {len(ranked)} -> {len(confirmed)} 个 (过滤: {', '.join(filtered_names[:5])}{'...' if len(filtered_names) > 5 else ''})")
         ranked = confirmed
+        # 按新分数重新排序
+        ranked.sort(key=lambda x: x["score"], reverse=True)
 
     if not ranked:
         print("\n确认层过滤后没有剩余信号。")
