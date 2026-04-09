@@ -81,6 +81,24 @@ def compute_mfi(
     return float(100.0 - 100.0 / (1.0 + pos_sum / neg_sum))
 
 
+def compute_volume_surge(
+    volumes: pd.Series,
+    recent_days: int = 3,
+    baseline_days: int = 7,
+) -> float:
+    """计算近 recent_days 日均量 / 前 baseline_days 日均量。
+
+    返回比值（1.0=无变化，2.0=倍量）。数据不足返回 1.0。
+    """
+    if len(volumes) < recent_days + baseline_days:
+        return 1.0
+    recent_avg = volumes.iloc[-recent_days:].mean()
+    baseline_avg = volumes.iloc[-(recent_days + baseline_days):-recent_days].mean()
+    if baseline_avg == 0:
+        return 1.0
+    return float(recent_avg / baseline_avg)
+
+
 def confirm_signal(
     df: pd.DataFrame,
     direction: str,

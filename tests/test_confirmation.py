@@ -150,3 +150,27 @@ def test_confirm_short_pass():
     df = _make_df(prices, vols)
     result = confirm_signal(df, "short", min_pass=3)
     assert result.passed is True
+
+
+from scanner.confirmation import compute_volume_surge
+
+
+def test_volume_surge_detects_increase():
+    """近3日均量是前7日的2倍 -> surge = 2.0。"""
+    volumes = pd.Series([100.0] * 7 + [200.0] * 3)
+    surge = compute_volume_surge(volumes, recent_days=3, baseline_days=7)
+    assert abs(surge - 2.0) < 0.01
+
+
+def test_volume_surge_no_change():
+    """均匀量能 -> surge ≈ 1.0。"""
+    volumes = pd.Series([100.0] * 10)
+    surge = compute_volume_surge(volumes, recent_days=3, baseline_days=7)
+    assert abs(surge - 1.0) < 0.01
+
+
+def test_volume_surge_insufficient_data():
+    """数据不足 -> 返回 1.0。"""
+    volumes = pd.Series([100.0] * 5)
+    surge = compute_volume_surge(volumes, recent_days=3, baseline_days=7)
+    assert surge == 1.0
