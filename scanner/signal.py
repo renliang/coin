@@ -7,6 +7,8 @@ class SignalConfig:
     hold_days: int = 3
     stop_loss: float = 0.05
     take_profit: float = 0.08
+    confirmation: bool = True
+    confirmation_min_pass: int = 3
 
 
 @dataclass

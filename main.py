@@ -1,6 +1,7 @@
 import argparse
 import json
 import os
+from dataclasses import replace
 from datetime import datetime
 
 import yaml
@@ -12,9 +13,14 @@ from scanner.detector import detect_pattern
 from scanner.scorer import score_result, rank_results
 from scanner.tracker import save_scan, get_tracked_symbols, get_history
 from scanner.signal import SignalConfig, generate_signals
+from scanner.confirmation import confirm_signal
+from scanner.new_coin import NewCoinConfig, build_new_listings_payload, screen_new_listings
+from scanner.listing_intel import ListingIntelConfig, enrich_new_listings_payload
 
 
-def load_config(path: str = "config.yaml") -> tuple[dict, SignalConfig]:
+def load_config(
+    path: str = "config.yaml",
+) -> tuple[dict, SignalConfig, NewCoinConfig, ListingIntelConfig]:
     with open(path) as f:
         raw = yaml.safe_load(f)
     proxy = (raw.get("proxy") or {}).get("https", "")
@@ -28,20 +34,27 @@ def load_config(path: str = "config.yaml") -> tuple[dict, SignalConfig]:
         hold_days=sig.get("hold_days", 3),
         stop_loss=sig.get("stop_loss", 0.05),
         take_profit=sig.get("take_profit", 0.08),
+        confirmation=sig.get("confirmation", True),
+        confirmation_min_pass=sig.get("confirmation_min_pass", 3),
     )
-    return raw.get("scanner", {}), signal_config
+    new_coin = NewCoinConfig.from_mapping(raw.get("new_coin"))
+    listing_intel = ListingIntelConfig.from_mapping(
+        raw.get("listing_intel"),
+        proxy_https=proxy or None,
+    )
+    return raw.get("scanner", {}), signal_config, new_coin, listing_intel
 
 
 def run(config: dict, signal_config: SignalConfig, top_n: int | None = None, symbols_override: list[str] | None = None):
     top_n = top_n or config.get("top_n", 20)
     max_market_cap = config.get("max_market_cap", 100_000_000)
 
-    # Step 1: 获取交易对列表（OKX合约 ∩ Binance现货）
+    # Step 1: 获取交易对列表（Binance U本位永续 base ∩ Binance 现货）
     if symbols_override:
         symbols = symbols_override
         print(f"[1/4] 使用指定的 {len(symbols)} 个交易对")
     else:
-        print(f"[1/4] 获取OKX永续合约列表（Binance现货有K线的）...")
+        print(f"[1/4] 获取Binance U本位永续与现货交集列表...")
         symbols = fetch_futures_symbols()
         print(f"       共 {len(symbols)} 个合约交易对")
 
@@ -115,6 +128,24 @@ def run(config: dict, signal_config: SignalConfig, top_n: int | None = None, sym
 
     ranked = rank_results(matches, top_n=top_n)
 
+    # 确认层过滤
+    if signal_config.confirmation:
+        confirmed = []
+        filtered_names = []
+        for m in ranked:
+            result = confirm_signal(klines[m["symbol"]], "long", signal_config.confirmation_min_pass)
+            if result.passed:
+                confirmed.append(m)
+            else:
+                filtered_names.append(m["symbol"])
+        if filtered_names:
+            print(f"[确认] {len(ranked)} -> {len(confirmed)} 个 (过滤: {', '.join(filtered_names[:5])}{'...' if len(filtered_names) > 5 else ''})")
+        ranked = confirmed
+
+    if not ranked:
+        print("\n确认层过滤后没有剩余信号。")
+        return
+
     # 保存到数据库
     scan_id = save_scan(ranked)
     print(f"\n[跟踪] 本次扫描ID: {scan_id}，已记录 {len(ranked)} 个币种及价格")
@@ -186,7 +217,7 @@ def run_divergence(config: dict, signal_config: SignalConfig, top_n: int | None 
         symbols = symbols_override
         print(f"[1/4] 使用指定的 {len(symbols)} 个交易对")
     else:
-        print(f"[1/4] 获取OKX永续合约列表（Binance现货有K线的）...")
+        print(f"[1/4] 获取Binance U本位永续与现货交集列表...")
         symbols = fetch_futures_symbols()
         print(f"       共 {len(symbols)} 个合约交易对")
 
@@ -247,6 +278,25 @@ def run_divergence(config: dict, signal_config: SignalConfig, top_n: int | None 
         return
 
     ranked = rank_results(matches, top_n=top_n)
+
+    # 确认层过滤
+    if signal_config.confirmation:
+        confirmed = []
+        filtered_names = []
+        for m in ranked:
+            direction = "short" if m.get("signal_type") == "顶背离" else "long"
+            result = confirm_signal(klines[m["symbol"]], direction, signal_config.confirmation_min_pass)
+            if result.passed:
+                confirmed.append(m)
+            else:
+                filtered_names.append(m["symbol"])
+        if filtered_names:
+            print(f"[确认] {len(ranked)} -> {len(confirmed)} 个 (过滤: {', '.join(filtered_names[:5])}{'...' if len(filtered_names) > 5 else ''})")
+        ranked = confirmed
+
+    if not ranked:
+        print("\n确认层过滤后没有剩余信号。")
+        return
 
     # 保存到数据库
     scan_id = save_scan(ranked, mode="divergence")
@@ -353,16 +403,128 @@ def show_history(symbol: str):
     print(tabulate(table_data, headers=headers, tablefmt="simple"))
 
 
-def run_backtest_cli(config: dict, days: int, symbols_override: list[str] | None = None):
+def run_new_coin_observation(
+    new_cfg: NewCoinConfig,
+    top_n: int | None = None,
+    *,
+    listing_intel_cfg: ListingIntelConfig | None = None,
+):
+    """新币观察清单（不跑蓄力/背离，不生成交易信号）。"""
+    cfg = replace(new_cfg, top_n=top_n) if top_n is not None else new_cfg
+    intel_cfg = listing_intel_cfg or ListingIntelConfig()
+    step_tag = "[1/2]" if intel_cfg.enabled else "[1/1]"
+    print(f"{step_tag} 新币观察清单（Binance U本位永续∩现货，上架≤{cfg.max_listing_days}天）...")
+    if intel_cfg.enabled:
+        print(
+            "       L2 增强已启用：L2a 公告 / L2b DexScreener 链上池近似 / L2c 规则尽调分"
+            "（Binance CMS 可能被 WAF 拦截，可配代理或 manual_overlay_csv）。"
+        )
+    rows = screen_new_listings(cfg)
+    if not rows:
+        print("\n没有符合新币条件的交易对。")
+        print(
+            "提示: 宇宙为「Binance U本位 USDT 永续 base ∩ Binance 现货」；另有上架天数、24h 成交额等门槛。"
+            "可在 config.yaml 的 new_coin 段放宽 max_listing_days / min_quote_volume_24h；"
+            "代理或限速导致单币请求失败时，有效条数也会偏少。"
+        )
+        return
+
+    payload = build_new_listings_payload(rows)
+    if intel_cfg.enabled:
+        print("[2/2] L2 增强（公告 / 链上 / 尽调分）...")
+        payload = enrich_new_listings_payload(payload, intel_cfg)
+        rows = payload["rows"]
+        st = (payload.get("meta") or {}).get("intel_stats") or {}
+        if st:
+            print(
+                f"       intel: 尝试 {st.get('rows_attempted')} 行 | "
+                f"L2a 命中 {st.get('l2a_matched')} | L2b 命中 {st.get('l2b_matched')} | "
+                f"L2c 计分 {st.get('l2c_scored')}",
+            )
+            err = st.get("source_errors") or []
+            if err:
+                print(f"       警告: {err[:3]}{'…' if len(err) > 3 else ''}")
+
+    table_data = []
+    for i, r in enumerate(rows, 1):
+        chg = r.get("change_24h_pct")
+        chg_s = f"{chg:.2%}" if chg is not None else "-"
+        avg7 = r.get("avg_quote_volume_7d")
+        avg7_s = f"{avg7:,.0f}" if avg7 is not None else "-"
+        mcap = r.get("market_cap_usd") or 0.0
+        mcap_s = f"{mcap / 1e6:.2f}M" if mcap else "-"
+        row_out = [
+            i,
+            r["symbol"],
+            r["listing_days"],
+            f"{r['price']:.6f}",
+            f"{r['quote_volume_24h']:,.0f}",
+            avg7_s,
+            chg_s,
+            mcap_s,
+        ]
+        if intel_cfg.enabled and intel_cfg.l2c_dd_score:
+            row_out.extend([
+                r.get("dd_score", "-"),
+                r.get("trust_tier", "-"),
+            ])
+        table_data.append(row_out)
+    headers = [
+        "#", "交易对", "上架天数", "价格", "24h额", "7d均额*", "24h涨跌", "市值",
+    ]
+    if intel_cfg.enabled and intel_cfg.l2c_dd_score:
+        headers.extend(["DD分", "信任档"])
+    print(f"\n共 {len(rows)} 条（*7d均额为近似 quote 额；市值来自 CoinGecko 分页命中）:\n")
+    print(tabulate(table_data, headers=headers, tablefmt="simple"))
+    if len(rows) < cfg.top_n:
+        vol_s = f"{cfg.min_quote_volume_24h:,.0f}"
+        print(
+            f"\n说明: 当前仅 {len(rows)} 条，少于 top_n={cfg.top_n}，表示通过筛选的候选本就这些（非截断误伤）。"
+            f"常见原因：交集宇宙内同时满足 上架≤{cfg.max_listing_days} 天、24h 成交额≥{vol_s} USDT 的币较少；"
+            "或部分交易对请求失败被跳过。可调大 max_listing_days / 调小 min_quote_volume_24h，或检查代理与 request_delay。"
+        )
+
+    os.makedirs("results", exist_ok=True)
+    ts = datetime.now().strftime("%Y-%m-%d_%H%M%S")
+    json_path = f"results/new_listings_{ts}.json"
+    with open(json_path, "w") as f:
+        json.dump(payload, f, ensure_ascii=False, indent=2)
+    txt_path = f"results/new_listings_{ts}.txt"
+    with open(txt_path, "w") as f:
+        f.write(f"扫描时间: {ts}\n模式: new_listings\n\n")
+        f.write(tabulate(table_data, headers=headers, tablefmt="simple"))
+        f.write("\n")
+    print(f"\n结果已保存到 {json_path} 和 {txt_path}")
+
+
+def run_backtest_cli(
+    config: dict,
+    signal_config: SignalConfig,
+    days: int,
+    symbols_override: list[str] | None = None,
+    verify_signal: bool = False,
+    run_sensitivity: bool = False,
+):
     """运行回测：拉取历史K线，滑动窗口检测，统计收益。"""
-    from scanner.backtest import run_backtest, compute_stats, format_stats
+    from scanner.backtest import (
+        run_backtest,
+        compute_stats,
+        format_stats,
+        compute_signal_verification_splits,
+        format_signal_verification,
+    )
+    from scanner.sensitivity import (
+        run_scanner_sensitivity_grid,
+        format_sensitivity_table,
+        sensitivity_market_cap_note,
+    )
 
     # Step 1: 获取交易对列表
     if symbols_override:
         symbols = symbols_override
         print(f"[1/3] 使用指定的 {len(symbols)} 个交易对")
     else:
-        print(f"[1/3] 获取OKX永续合约列表...")
+        print(f"[1/3] 获取Binance U本位永续与现货交集列表...")
         symbols = fetch_futures_symbols()
         print(f"       共 {len(symbols)} 个合约交易对")
 
@@ -387,6 +549,21 @@ def run_backtest_cli(config: dict, days: int, symbols_override: list[str] | None
     stats = compute_stats(hits)
     output = format_stats(stats)
     print(f"\n{output}")
+
+    if verify_signal:
+        period = f"{signal_config.hold_days}d"
+        sv = compute_signal_verification_splits(
+            hits,
+            min_score=signal_config.min_score,
+            period=period,
+        )
+        print("\n" + format_signal_verification(sv))
+
+    if run_sensitivity:
+        grid = run_scanner_sensitivity_grid(klines, base_config=config)
+        print("\n=== 参数敏感性（命中数，同一批 K 线）===\n")
+        print(format_sensitivity_table(grid))
+        print("\n" + sensitivity_market_cap_note(config.get("skip_market_cap_filter", False)))
 
     # 保存结果
     os.makedirs("results", exist_ok=True)
@@ -424,25 +601,70 @@ def run_backtest_cli(config: dict, days: int, symbols_override: list[str] | None
 
 def main():
     parser = argparse.ArgumentParser(description="币种形态筛选器")
-    parser.add_argument("--mode", choices=["accumulation", "divergence"], default="accumulation",
-                        help="扫描模式: accumulation=底部蓄力, divergence=MACD背离")
+    parser.add_argument(
+        "--mode",
+        choices=["accumulation", "divergence", "new"],
+        default="accumulation",
+        help="扫描模式: accumulation=底部蓄力, divergence=MACD背离, new=新币观察清单",
+    )
     parser.add_argument("--top", type=int, help="输出前N个结果")
     parser.add_argument("--config", default="config.yaml", help="配置文件路径")
     parser.add_argument("--symbols", nargs="+", help="直接指定交易对")
     parser.add_argument("--track", action="store_true", help="查看所有跟踪中的币种")
     parser.add_argument("--history", type=str, help="查看某币种历史记录，如 ZIL/USDT")
     parser.add_argument("--backtest", action="store_true", help="运行回测验证形态有效性")
+    parser.add_argument(
+        "--verify-signal",
+        action="store_true",
+        help="与 --backtest 联用：按检测日中位数分段，对比 signal 门槛下收益",
+    )
+    parser.add_argument(
+        "--sensitivity",
+        action="store_true",
+        help="与 --backtest 联用：对 key scanner 参数输出命中数敏感性表",
+    )
     parser.add_argument("--days", type=int, default=180, help="回测历史K线天数（默认180）")
+    parser.add_argument(
+        "--no-intel",
+        action="store_true",
+        help="与 --mode new 联用：关闭 L2 增强（公告/链上/尽调分）",
+    )
+    parser.add_argument(
+        "--no-confirm",
+        action="store_true",
+        help="关闭信号确认层（多指标共振过滤）",
+    )
     args = parser.parse_args()
 
-    config, signal_config = load_config(args.config)
+    config, signal_config, new_coin_config, listing_intel_config = load_config(args.config)
+
+    if args.no_confirm:
+        signal_config = replace(signal_config, confirmation=False)
 
     if args.track:
         show_tracking()
     elif args.history:
         show_history(args.history)
     elif args.backtest:
-        run_backtest_cli(config, days=args.days, symbols_override=args.symbols)
+        run_backtest_cli(
+            config,
+            signal_config,
+            days=args.days,
+            symbols_override=args.symbols,
+            verify_signal=args.verify_signal,
+            run_sensitivity=args.sensitivity,
+        )
+    elif args.mode == "new":
+        intel_cfg = (
+            replace(listing_intel_config, enabled=False)
+            if args.no_intel
+            else listing_intel_config
+        )
+        run_new_coin_observation(
+            new_coin_config,
+            top_n=args.top,
+            listing_intel_cfg=intel_cfg,
+        )
     elif args.mode == "divergence":
         run_divergence(config, signal_config, top_n=args.top, symbols_override=args.symbols)
     else:
