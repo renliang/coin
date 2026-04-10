@@ -7,6 +7,7 @@ from scanner.confirmation import (
     compute_mfi,
     confirm_signal,
     ConfirmationResult,
+    compute_price_momentum,
 )
 
 
@@ -253,3 +254,35 @@ def test_confirm_signal_has_surge_and_atr_fields():
     assert hasattr(result, "atr_accel_ok")
     assert "volume_surge" in result.details
     assert "atr_accel" in result.details
+
+
+def test_price_momentum_uptrend():
+    """近5日上涨 -> 正收益率。"""
+    closes = pd.Series([10.0, 10.5, 11.0, 11.5, 12.0, 12.5])
+    mom = compute_price_momentum(closes, days=5)
+    assert mom > 0.2
+
+
+def test_price_momentum_downtrend():
+    """近5日下跌 -> 负收益率。"""
+    closes = pd.Series([12.0, 11.5, 11.0, 10.5, 10.0, 9.5])
+    mom = compute_price_momentum(closes, days=5)
+    assert mom < -0.1
+
+
+def test_price_momentum_insufficient_data():
+    """数据不足 -> 返回 0.0。"""
+    closes = pd.Series([10.0, 11.0])
+    mom = compute_price_momentum(closes, days=5)
+    assert mom == 0.0
+
+
+def test_confirm_signal_filters_declining_coin():
+    """持续下跌的币（类似FIDA冲高回落）应被动量指标惩罚。"""
+    # 先拉升后连续7天下跌
+    prices = [10.0 + i * 0.5 for i in range(15)] + [17.5 - i * 0.3 for i in range(15)]
+    vols = [500.0] * 15 + [100.0] * 15
+    df = _make_df(prices, vols)
+    result = confirm_signal(df, "long", min_pass=4)
+    assert result.momentum_ok is False
+    assert result.details["momentum_5d"] < -0.05

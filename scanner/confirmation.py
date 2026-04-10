@@ -17,6 +17,7 @@ class ConfirmationResult:
     mfi_ok: bool
     volume_surge_ok: bool
     atr_accel_ok: bool
+    momentum_ok: bool
     details: dict
 
 
@@ -142,6 +143,16 @@ def compute_atr_accel(
     return float(recent_atr / baseline_atr)
 
 
+def compute_price_momentum(closes: pd.Series, days: int = 5) -> float:
+    """计算近 days 日收益率。
+
+    返回小数（0.05 = +5%, -0.10 = -10%）。数据不足返回 0.0。
+    """
+    if len(closes) < days + 1:
+        return 0.0
+    return float((closes.iloc[-1] - closes.iloc[-(days + 1)]) / closes.iloc[-(days + 1)])
+
+
 def confirm_signal(
     df: pd.DataFrame,
     direction: str,
@@ -169,6 +180,7 @@ def confirm_signal(
     mfi = compute_mfi(highs, lows, closes, volumes, period=14)
     surge = compute_volume_surge(volumes, recent_days=3, baseline_days=7)
     accel = compute_atr_accel(highs, lows, closes, recent_days=7, baseline_days=14)
+    momentum = compute_price_momentum(closes, days=5)
 
     # --- bool 判断（用于过滤） ---
     if direction == "long":
@@ -183,9 +195,13 @@ def confirm_signal(
         mfi_ok = 20 <= mfi <= 80
     volume_surge_ok = surge >= 1.5
     atr_accel_ok = accel > 1.2
+    if direction == "long":
+        momentum_ok = momentum >= -0.05
+    else:
+        momentum_ok = momentum <= 0.05
 
     checks = [bool(rsi_ok), bool(obv_ok), bool(volume_ratio_ok),
-              bool(mfi_ok), bool(volume_surge_ok), bool(atr_accel_ok)]
+              bool(mfi_ok), bool(volume_surge_ok), bool(atr_accel_ok), bool(momentum_ok)]
     passed_count = sum(checks)
 
     # --- 连续分计算 [0, 1] ---
@@ -211,9 +227,13 @@ def confirm_signal(
     mfi_score = max(0.0, 1.0 - abs(mfi - 50) / 50)
     surge_score = min(1.0, max(0.0, (surge - 1.0) / 1.0))
     accel_score = min(1.0, max(0.0, (accel - 1.0) / 0.5))
+    if direction == "long":
+        momentum_score = min(1.0, max(0.0, (momentum + 0.10) / 0.20))
+    else:
+        momentum_score = min(1.0, max(0.0, (-momentum + 0.10) / 0.20))
 
-    # 6 项均分
-    confirmation_score = (rsi_score + obv_score + vr_score + mfi_score + surge_score + accel_score) / 6.0
+    # 7 项均分
+    confirmation_score = (rsi_score + obv_score + vr_score + mfi_score + surge_score + accel_score + momentum_score) / 7.0
 
     # 加分：以 0.5 为中性，最大 ±0.10
     bonus = (confirmation_score - 0.5) * 0.2
@@ -230,6 +250,7 @@ def confirm_signal(
         mfi_ok=checks[3],
         volume_surge_ok=checks[4],
         atr_accel_ok=checks[5],
+        momentum_ok=checks[6],
         details={
             "rsi": round(rsi, 1),
             "obv_7d": round(obv_trend, 2),
@@ -237,5 +258,6 @@ def confirm_signal(
             "mfi": round(mfi, 1),
             "volume_surge": round(surge, 2),
             "atr_accel": round(accel, 2),
+            "momentum_5d": round(momentum, 4),
         },
     )
