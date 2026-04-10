@@ -14,6 +14,7 @@ from scanner.scorer import score_result, rank_results
 from scanner.tracker import save_scan, get_tracked_symbols, get_history
 from scanner.signal import SignalConfig, generate_signals
 from scanner.confirmation import confirm_signal
+from scanner.breakout import detect_breakout
 from scanner.new_coin import NewCoinConfig, build_new_listings_payload, screen_new_listings
 from scanner.listing_intel import ListingIntelConfig, enrich_new_listings_payload
 
@@ -42,7 +43,10 @@ def load_config(
         raw.get("listing_intel"),
         proxy_https=proxy or None,
     )
-    return raw.get("scanner", {}), signal_config, new_coin, listing_intel
+    scanner_cfg = dict(raw.get("scanner", {}))
+    if "breakout" in raw:
+        scanner_cfg["breakout"] = raw["breakout"]
+    return scanner_cfg, signal_config, new_coin, listing_intel
 
 
 def run(config: dict, signal_config: SignalConfig, top_n: int | None = None, symbols_override: list[str] | None = None):
@@ -369,6 +373,178 @@ def run_divergence(config: dict, signal_config: SignalConfig, top_n: int | None 
     print(f"结果已保存到 {json_path} 和 {txt_path}")
 
 
+def run_breakout(config: dict, signal_config: SignalConfig, top_n: int | None = None, symbols_override: list[str] | None = None):
+    breakout_cfg = config.get("breakout", {})
+    top_n = top_n or breakout_cfg.get("top_n", 20)
+    max_market_cap = config.get("max_market_cap", 100_000_000)
+
+    # Step 1: 获取交易对列表
+    if symbols_override:
+        symbols = symbols_override
+        print(f"[1/4] 使用指定的 {len(symbols)} 个交易对")
+    else:
+        print("[1/4] 获取Binance U本位永续与现货交集列表...")
+        symbols = fetch_futures_symbols()
+        print(f"       共 {len(symbols)} 个合约交易对")
+
+    if not symbols:
+        print("没有找到交易对。")
+        return
+
+    # Step 2: 拉K线（30天）
+    print(f"[2/4] 从Binance拉取K线数据（{len(symbols)}个交易对，30天）...")
+    klines = fetch_klines_batch(symbols, days=30, delay=0.5)
+    print(f"       成功获取 {len(klines)} 个交易对的K线")
+
+    # Step 3: 天量回踩检测
+    print("[3/4] 天量回踩二攻检测中...")
+    matches = []
+    for symbol, df in klines.items():
+        result = detect_breakout(
+            df,
+            spike_multiplier=breakout_cfg.get("spike_multiplier", 5.0),
+            shrink_threshold=breakout_cfg.get("shrink_threshold", 0.3),
+            reattack_multiplier=breakout_cfg.get("reattack_multiplier", 2.0),
+            max_pullback_days=breakout_cfg.get("max_pullback_days", 10),
+            freshness_days=breakout_cfg.get("freshness_days", 3),
+        )
+        if not result.matched:
+            continue
+        matches.append({
+            "symbol": symbol,
+            "price": result.reattack_close,
+            "drop_pct": 0,
+            "volume_ratio": 0,
+            "window_days": result.days_since_spike,
+            "score": result.score,
+            "signal_type": "天量回踩",
+            "mode": "breakout",
+            "spike_date": result.spike_date,
+            "spike_vol_ratio": result.spike_volume_ratio,
+            "pullback_low": result.pullback_low,
+            "spike_high": result.spike_high,
+        })
+
+    print(f"       命中 {len(matches)} 个")
+
+    if not matches:
+        print("\n未找到天量回踩二攻模式的币种。")
+        return
+
+    # Step 4: 市值过滤
+    skip_cap = config.get("skip_market_cap_filter", False)
+    if not symbols_override and not skip_cap:
+        base_symbols = [m["symbol"].split("/")[0] for m in matches]
+        print(f"[4/4] 查询 {len(base_symbols)} 个命中币种的市值...")
+        market_caps = fetch_market_caps(base_symbols, page_delay=config.get("page_delay", 30))
+        for m in matches:
+            base = m["symbol"].split("/")[0]
+            m["market_cap_m"] = market_caps.get(base, 0) / 1e6
+        before = len(matches)
+        matches = [m for m in matches if 0 < m["market_cap_m"] <= max_market_cap / 1e6]
+        print(f"       市值过滤: {before} -> {len(matches)} 个 (< ${max_market_cap / 1e6:.0f}M)")
+    else:
+        print("[4/4] 跳过市值过滤")
+        for m in matches:
+            m["market_cap_m"] = 0
+
+    if not matches:
+        print("\n过滤后没有符合条件的币种。")
+        return
+
+    ranked = rank_results(matches, top_n=top_n)
+
+    # 确认层过滤 + 加分
+    if signal_config.confirmation:
+        confirmed = []
+        filtered_names = []
+        for m in ranked:
+            result = confirm_signal(klines[m["symbol"]], "long", signal_config.confirmation_min_pass)
+            if result.passed:
+                m["base_score"] = m["score"]
+                m["confirm_bonus"] = result.bonus
+                m["score"] = round(m["base_score"] + result.bonus, 4)
+                confirmed.append(m)
+            else:
+                filtered_names.append(m["symbol"])
+        if filtered_names:
+            print(f"[确认] {len(ranked)} -> {len(confirmed)} 个 (过滤: {', '.join(filtered_names[:5])}{'...' if len(filtered_names) > 5 else ''})")
+        ranked = confirmed
+        ranked.sort(key=lambda x: x["score"], reverse=True)
+
+    if not ranked:
+        print("\n确认层过滤后没有剩余信号。")
+        return
+
+    # 保存到数据库
+    scan_id = save_scan(ranked, mode="breakout")
+    print(f"\n[跟踪] 本次扫描ID: {scan_id}，已记录 {len(ranked)} 个币种及价格")
+
+    # 信号过滤
+    signals = generate_signals(ranked, signal_config)
+    print(f"[信号] 评分≥{signal_config.min_score} 过滤: {len(ranked)} -> {len(signals)} 个")
+
+    if not signals:
+        print("\n没有达到信号门槛的币种。")
+        return
+
+    # 重算止损止盈（用天量回踩特有的位置）
+    for s in signals:
+        m = next(r for r in ranked if r["symbol"] == s.symbol)
+        s.stop_loss_price = round(m["pullback_low"] * 0.97, 6)
+        s.take_profit_price = round(m["spike_high"], 6)
+
+    # 输出表格
+    table_data = []
+    for i, s in enumerate(signals, 1):
+        m = next(r for r in ranked if r["symbol"] == s.symbol)
+        table_data.append([
+            i,
+            s.symbol,
+            s.signal_type,
+            f"{s.price:.4f}",
+            f"{s.score:.2f}",
+            f"{m.get('spike_date', '')}",
+            f"{m.get('spike_vol_ratio', 0):.0f}x",
+            f"{s.entry_price:.4f}",
+            f"{s.stop_loss_price:.4f}",
+            f"{s.take_profit_price:.4f}",
+        ])
+
+    headers = ["排名", "币种", "类型", "价格", "评分", "天量日", "倍数", "入场", "止损", "止盈"]
+    print(f"\n找到 {len(signals)} 个交易信号:\n")
+    print(tabulate(table_data, headers=headers, tablefmt="simple"))
+
+    # 保存文件
+    os.makedirs("results", exist_ok=True)
+    ts = datetime.now().strftime("%Y-%m-%d_%H%M%S")
+    json_data = [
+        {
+            "symbol": s.symbol,
+            "signal_type": s.signal_type,
+            "price": s.price,
+            "score": s.score,
+            "spike_date": next(r for r in ranked if r["symbol"] == s.symbol).get("spike_date", ""),
+            "spike_vol_ratio": next(r for r in ranked if r["symbol"] == s.symbol).get("spike_vol_ratio", 0),
+            "entry_price": s.entry_price,
+            "stop_loss_price": s.stop_loss_price,
+            "take_profit_price": s.take_profit_price,
+        }
+        for s in signals
+    ]
+    json_path = f"results/breakout_{ts}.json"
+    with open(json_path, "w") as f:
+        json.dump(json_data, f, ensure_ascii=False, indent=2)
+    txt_path = f"results/breakout_{ts}.txt"
+    with open(txt_path, "w") as f:
+        f.write(f"扫描时间: {ts}\n")
+        f.write(f"模式: 天量回踩二攻\n")
+        f.write(f"找到 {len(signals)} 个交易信号:\n\n")
+        f.write(tabulate(table_data, headers=headers, tablefmt="simple"))
+        f.write("\n")
+    print(f"结果已保存到 {json_path} 和 {txt_path}")
+
+
 def show_tracking():
     """显示所有跟踪中的币种"""
     tracked = get_tracked_symbols()
@@ -613,9 +789,9 @@ def main():
     parser = argparse.ArgumentParser(description="币种形态筛选器")
     parser.add_argument(
         "--mode",
-        choices=["accumulation", "divergence", "new"],
+        choices=["accumulation", "divergence", "new", "breakout"],
         default="accumulation",
-        help="扫描模式: accumulation=底部蓄力, divergence=MACD背离, new=新币观察清单",
+        help="扫描模式: accumulation=底部蓄力, divergence=MACD背离, new=新币观察清单, breakout=天量回踩",
     )
     parser.add_argument("--top", type=int, help="输出前N个结果")
     parser.add_argument("--config", default="config.yaml", help="配置文件路径")
@@ -675,6 +851,8 @@ def main():
             top_n=args.top,
             listing_intel_cfg=intel_cfg,
         )
+    elif args.mode == "breakout":
+        run_breakout(config, signal_config, top_n=args.top, symbols_override=args.symbols)
     elif args.mode == "divergence":
         run_divergence(config, signal_config, top_n=args.top, symbols_override=args.symbols)
     else:
