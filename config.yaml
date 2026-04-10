@@ -53,3 +53,12 @@ listing_intel:
   manual_overlay_csv: null      # 例如 overlays/listing_notes.csv
   trust_tier_high_min: 75
   trust_tier_mid_min: 55
+
+# 天量回踩二攻模式（--mode breakout）
+breakout:
+  spike_multiplier: 5.0       # 天量倍数阈值（单日量 >= 20日均量 × N）
+  shrink_threshold: 0.3       # 缩量需低于天量的 30%
+  reattack_multiplier: 2.0    # 二攻量 >= 近3日均量 × N
+  max_pullback_days: 10       # 天量后最多等10天出现二攻
+  freshness_days: 3           # 二攻日必须在最近N天内
+  top_n: 20
