@@ -25,3 +25,36 @@ def compute_stats(trades: list[dict]) -> dict:
         "max_gain": max(pnl_pcts),
         "max_loss": min(pnl_pcts) if min(pnl_pcts) < 0 else 0,
     }
+
+
+def _group_by(trades: list[dict], key_fn) -> dict[str, list[dict]]:
+    groups: dict[str, list[dict]] = {}
+    for t in trades:
+        k = key_fn(t)
+        groups.setdefault(k, []).append(t)
+    return groups
+
+
+def compute_stats_by_mode(trades: list[dict]) -> dict[str, dict]:
+    groups = _group_by(trades, lambda t: t.get("mode", ""))
+    return {mode: compute_stats(group) for mode, group in sorted(groups.items())}
+
+
+def compute_stats_by_score_tier(trades: list[dict]) -> dict[str, dict]:
+    def tier(t):
+        s = t.get("score", 0)
+        if s >= 0.8:
+            return "0.8+"
+        if s >= 0.7:
+            return "0.7-0.8"
+        return "0.6-0.7"
+    groups = _group_by(trades, tier)
+    order = ["0.8+", "0.7-0.8", "0.6-0.7"]
+    return {k: compute_stats(groups.get(k, [])) for k in order if k in groups}
+
+
+def compute_stats_by_month(trades: list[dict]) -> dict[str, dict]:
+    def month_key(t):
+        return t.get("closed_at", "")[:7]
+    groups = _group_by(trades, month_key)
+    return {month: compute_stats(group) for month, group in sorted(groups.items(), reverse=True)}
