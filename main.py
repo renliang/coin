@@ -1,7 +1,7 @@
 import argparse
 import json
 import os
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from datetime import datetime
 
 import yaml
@@ -11,17 +11,51 @@ from scanner.coingecko import fetch_market_caps, set_proxy as set_coingecko_prox
 from scanner.kline import fetch_klines_batch, fetch_futures_symbols, set_proxy as set_kline_proxy
 from scanner.detector import detect_pattern
 from scanner.scorer import score_result, rank_results
-from scanner.tracker import save_scan, get_tracked_symbols, get_history
-from scanner.signal import SignalConfig, generate_signals
+from scanner.tracker import save_scan, get_tracked_symbols, get_history, get_closed_trades
+from scanner.signal import SignalConfig, TradeSignal, generate_signals, calculate_atr
 from scanner.confirmation import confirm_signal
 from scanner.breakout import detect_breakout
 from scanner.new_coin import NewCoinConfig, build_new_listings_payload, screen_new_listings
 from scanner.listing_intel import ListingIntelConfig, enrich_new_listings_payload
+from scanner.stats import (
+    compute_stats,
+    compute_stats_by_mode,
+    compute_stats_by_score_tier,
+    compute_stats_by_month,
+    format_stats_report,
+    export_stats_json,
+)
+
+
+@dataclass
+class TradingConfig:
+    enabled: bool = False
+    api_key_env: str = "BINANCE_API_KEY"
+    api_secret_env: str = "BINANCE_API_SECRET"
+    max_positions: int = 5
+    order_timeout_minutes: int = 30
+    score_sizing: dict[float, float] | None = None
+
+    def __post_init__(self):
+        if self.score_sizing is None:
+            self.score_sizing = {0.6: 0.02, 0.7: 0.03, 0.8: 0.04, 0.9: 0.05}
+
+    def get_api_key(self) -> str:
+        return os.environ.get(self.api_key_env, "")
+
+    def get_api_secret(self) -> str:
+        return os.environ.get(self.api_secret_env, "")
+
+
+@dataclass
+class ScheduleConfig:
+    scan_time: str = "08:00"
+    monitor_interval: int = 60
 
 
 def load_config(
     path: str = "config.yaml",
-) -> tuple[dict, SignalConfig, NewCoinConfig, ListingIntelConfig]:
+) -> tuple[dict, SignalConfig, NewCoinConfig, ListingIntelConfig, TradingConfig, ScheduleConfig]:
     with open(path) as f:
         raw = yaml.safe_load(f)
     proxy = (raw.get("proxy") or {}).get("https", "")
@@ -35,6 +69,9 @@ def load_config(
         hold_days=sig.get("hold_days", 3),
         stop_loss=sig.get("stop_loss", 0.05),
         take_profit=sig.get("take_profit", 0.08),
+        atr_period=sig.get("atr_period", 14),
+        atr_sl_multiplier=sig.get("atr_sl_multiplier", 2.0),
+        atr_tp_multiplier=sig.get("atr_tp_multiplier", 3.0),
         confirmation=sig.get("confirmation", True),
         confirmation_min_pass=sig.get("confirmation_min_pass", 3),
     )
@@ -46,7 +83,28 @@ def load_config(
     scanner_cfg = dict(raw.get("scanner", {}))
     if "breakout" in raw:
         scanner_cfg["breakout"] = raw["breakout"]
-    return scanner_cfg, signal_config, new_coin, listing_intel
+
+    # trading config
+    t = raw.get("trading", {})
+    score_sizing_raw = t.get("score_sizing")
+    score_sizing = {float(k): float(v) for k, v in score_sizing_raw.items()} if score_sizing_raw else None
+    trading_config = TradingConfig(
+        enabled=t.get("enabled", False),
+        api_key_env=t.get("api_key_env", "BINANCE_API_KEY"),
+        api_secret_env=t.get("api_secret_env", "BINANCE_API_SECRET"),
+        max_positions=t.get("max_positions", 5),
+        order_timeout_minutes=t.get("order_timeout_minutes", 30),
+        score_sizing=score_sizing,
+    )
+
+    # schedule config
+    s = raw.get("schedule", {})
+    schedule_config = ScheduleConfig(
+        scan_time=s.get("scan_time", "08:00"),
+        monitor_interval=s.get("monitor_interval", 60),
+    )
+
+    return scanner_cfg, signal_config, new_coin, listing_intel, trading_config, schedule_config
 
 
 def run(config: dict, signal_config: SignalConfig, top_n: int | None = None, symbols_override: list[str] | None = None):
@@ -94,6 +152,7 @@ def run(config: dict, signal_config: SignalConfig, top_n: int | None = None, sym
         )
         # 当日收盘价（K线最后一根）
         price = float(df["close"].iloc[-1])
+        atr = calculate_atr(df, period=signal_config.atr_period)
         matches.append({
             "symbol": symbol,
             "price": price,
@@ -101,6 +160,7 @@ def run(config: dict, signal_config: SignalConfig, top_n: int | None = None, sym
             "volume_ratio": detection.volume_ratio,
             "window_days": detection.window_days,
             "score": score,
+            "atr": atr,
         })
 
     print(f"       形态命中 {len(matches)} 个")
@@ -216,7 +276,7 @@ def run(config: dict, signal_config: SignalConfig, top_n: int | None = None, sym
     print(f"结果已保存到 {json_path} 和 {txt_path}")
 
 
-def run_divergence(config: dict, signal_config: SignalConfig, top_n: int | None = None, symbols_override: list[str] | None = None):
+def run_divergence(config: dict, signal_config: SignalConfig, top_n: int | None = None, symbols_override: list[str] | None = None) -> list[TradeSignal]:
     from scanner.divergence import detect_divergence
     top_n = top_n or config.get("top_n", 20)
     max_market_cap = config.get("max_market_cap", 100_000_000)
@@ -232,7 +292,7 @@ def run_divergence(config: dict, signal_config: SignalConfig, top_n: int | None 
 
     if not symbols:
         print("没有找到交易对。")
-        return
+        return []
 
     # Step 2: 拉K线（背离模式需要90天）
     print(f"[2/4] 从Binance拉取K线数据（{len(symbols)}个交易对，90天）...")
@@ -247,6 +307,7 @@ def run_divergence(config: dict, signal_config: SignalConfig, top_n: int | None 
         if result.divergence_type == "none":
             continue
         price = float(df["close"].iloc[-1])
+        atr = calculate_atr(df, period=signal_config.atr_period)
         signal_type = "底背离" if result.divergence_type == "bullish" else "顶背离"
         matches.append({
             "symbol": symbol,
@@ -257,13 +318,14 @@ def run_divergence(config: dict, signal_config: SignalConfig, top_n: int | None 
             "score": result.score,
             "signal_type": signal_type,
             "mode": "divergence",
+            "atr": atr,
         })
 
     print(f"       背离命中 {len(matches)} 个")
 
     if not matches:
         print("\n未找到MACD背离的币种。")
-        return
+        return []
 
     # Step 4: 市值过滤
     skip_cap = config.get("skip_market_cap_filter", False)
@@ -284,7 +346,7 @@ def run_divergence(config: dict, signal_config: SignalConfig, top_n: int | None 
 
     if not matches:
         print("\n过滤后没有符合条件的币种。")
-        return
+        return []
 
     ranked = rank_results(matches, top_n=top_n)
 
@@ -322,7 +384,7 @@ def run_divergence(config: dict, signal_config: SignalConfig, top_n: int | None 
 
     if not signals:
         print("\n没有达到信号门槛的币种。")
-        return
+        return []
 
     # 输出交易建议表格
     table_data = []
@@ -371,6 +433,7 @@ def run_divergence(config: dict, signal_config: SignalConfig, top_n: int | None 
         f.write(tabulate(table_data, headers=headers, tablefmt="simple"))
         f.write("\n")
     print(f"结果已保存到 {json_path} 和 {txt_path}")
+    return signals
 
 
 def run_breakout(config: dict, signal_config: SignalConfig, top_n: int | None = None, symbols_override: list[str] | None = None):
@@ -410,6 +473,7 @@ def run_breakout(config: dict, signal_config: SignalConfig, top_n: int | None = 
         )
         if not result.matched:
             continue
+        atr = calculate_atr(df, period=signal_config.atr_period)
         matches.append({
             "symbol": symbol,
             "price": result.reattack_close,
@@ -423,6 +487,7 @@ def run_breakout(config: dict, signal_config: SignalConfig, top_n: int | None = 
             "spike_vol_ratio": result.spike_volume_ratio,
             "pullback_low": result.pullback_low,
             "spike_high": result.spike_high,
+            "atr": atr,
         })
 
     print(f"       命中 {len(matches)} 个")
@@ -785,13 +850,186 @@ def run_backtest_cli(
     print(f"结果已保存到 {json_path} 和 {txt_path}")
 
 
+def execute_trading_pipeline(
+    signals: list[TradeSignal],
+    trading_config: TradingConfig,
+) -> None:
+    """交易管线：仓位过滤 → 计算仓位 → 下单执行。"""
+    import logging
+    from scanner.kline import get_authed_usdm
+    from scanner.trader.sizing import get_max_leverage, calculate_position
+    from scanner.trader.position import filter_signals
+    from scanner.trader.executor import execute_trade
+
+    logger = logging.getLogger("trader")
+
+    api_key = trading_config.get_api_key()
+    api_secret = trading_config.get_api_secret()
+    if not api_key or not api_secret:
+        logger.error("[交易] API Key 未配置，跳过自动下单")
+        print("[交易] API Key 未配置，跳过自动下单。请设置环境变量 BINANCE_API_KEY 和 BINANCE_API_SECRET")
+        return
+
+    # 获取代理（复用已配置的）
+    from scanner.kline import _authed_usdm, _usdm
+    proxy = ""
+    if _usdm and hasattr(_usdm, "httpsProxy"):
+        proxy = _usdm.httpsProxy or ""
+    exchange = get_authed_usdm(api_key, api_secret, proxy)
+
+    # 仓位过滤
+    try:
+        filtered = filter_signals(exchange, signals, trading_config.max_positions)
+    except Exception as e:
+        logger.error("[交易] 仓位查询失败: %s，跳过本轮下单", e)
+        print(f"[交易] 仓位查询失败: {e}，跳过本轮下单")
+        return
+
+    if not filtered:
+        print("[交易] 无可开仓信号（已持有或仓位已满）")
+        return
+
+    print(f"[交易] 准备下单: {len(filtered)} 个信号")
+
+    # 查询余额
+    try:
+        balance_info = exchange.fetch_balance()
+        available = float(balance_info.get("free", {}).get("USDT", 0))
+        print(f"[交易] 可用余额: {available:.2f} USDT")
+    except Exception as e:
+        logger.error("[交易] 余额查询失败: %s", e)
+        print(f"[交易] 余额查询失败: {e}")
+        return
+
+    # 逐个下单
+    success_count = 0
+    for signal in filtered:
+        leverage = get_max_leverage(exchange, signal.symbol)
+        amount = calculate_position(
+            balance=available,
+            price=signal.entry_price,
+            score=signal.score,
+            leverage=leverage,
+            score_sizing=trading_config.score_sizing,
+        )
+        if amount <= 0:
+            logger.warning("[%s] 计算仓位为 0，跳过", signal.symbol)
+            continue
+
+        ok = execute_trade(exchange, signal, amount, leverage)
+        if ok:
+            success_count += 1
+            # 扣减可用余额估算（实际由交易所管理）
+            margin_used = (amount * signal.entry_price) / leverage
+            available -= margin_used
+
+    print(f"[交易] 完成: 成功 {success_count}/{len(filtered)} 笔")
+
+
+def run_serve(
+    config: dict,
+    signal_config: SignalConfig,
+    trading_config: TradingConfig,
+    schedule_config: ScheduleConfig,
+) -> None:
+    """常驻模式：APScheduler 定时扫描 + 自动下单 + 订单监控。"""
+    import logging
+    import signal
+    from apscheduler.schedulers.blocking import BlockingScheduler
+
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s [%(name)s] %(levelname)s: %(message)s",
+        handlers=[
+            logging.FileHandler("logs/trader.log"),
+            logging.StreamHandler(),
+        ],
+    )
+    logger = logging.getLogger("serve")
+    os.makedirs("logs", exist_ok=True)
+
+    scheduler = BlockingScheduler()
+
+    # 定时扫描任务
+    hour, minute = map(int, schedule_config.scan_time.split(":"))
+
+    def scheduled_scan():
+        logger.info("=== 定时扫描开始 ===")
+        try:
+            signals = run_divergence(config, signal_config)
+            if signals and trading_config.enabled:
+                execute_trading_pipeline(signals, trading_config)
+            elif not trading_config.enabled:
+                logger.info("trading.enabled=false，仅扫描不下单")
+        except Exception as e:
+            logger.error("定时扫描异常: %s", e)
+        logger.info("=== 定时扫描结束 ===")
+
+    scheduler.add_job(scheduled_scan, "cron", hour=hour, minute=minute, id="daily_scan")
+    logger.info("定时扫描已注册: 每天 %s", schedule_config.scan_time)
+
+    # 订单监控任务
+    if trading_config.enabled:
+        def scheduled_monitor():
+            try:
+                from scanner.kline import get_authed_usdm
+                from scanner.trader.monitor import run_monitor_cycle
+                api_key = trading_config.get_api_key()
+                api_secret = trading_config.get_api_secret()
+                if not api_key or not api_secret:
+                    return
+                from scanner.kline import _usdm
+                proxy = ""
+                if _usdm and hasattr(_usdm, "httpsProxy"):
+                    proxy = _usdm.httpsProxy or ""
+                exchange = get_authed_usdm(api_key, api_secret, proxy)
+                run_monitor_cycle(exchange, trading_config.order_timeout_minutes)
+            except Exception as e:
+                logger.error("订单监控异常: %s", e)
+
+        scheduler.add_job(
+            scheduled_monitor,
+            "interval",
+            seconds=schedule_config.monitor_interval,
+            id="order_monitor",
+        )
+        logger.info("订单监控已注册: 每 %d 秒", schedule_config.monitor_interval)
+
+    print(f"[serve] 常驻模式启动 — 扫描时间: {schedule_config.scan_time}, 交易: {'开启' if trading_config.enabled else '关闭'}")
+    print("[serve] 按 Ctrl+C 退出")
+
+    try:
+        scheduler.start()
+    except (KeyboardInterrupt, SystemExit):
+        logger.info("常驻模式退出")
+
+
+def run_stats(json_only: bool = False) -> None:
+    """输出信号成功率统计。"""
+    trades = get_closed_trades()
+    if not trades:
+        print("暂无已关仓交易数据。")
+        return
+
+    overall = compute_stats(trades)
+    by_mode = compute_stats_by_mode(trades)
+    by_score = compute_stats_by_score_tier(trades)
+    by_month = compute_stats_by_month(trades)
+
+    if not json_only:
+        print(format_stats_report(overall, by_mode, by_score, by_month))
+
+    path = export_stats_json(overall, by_mode, by_score, by_month, trades=trades)
+    print(f"\n[导出] {path}")
+
+
 def main():
     parser = argparse.ArgumentParser(description="币种形态筛选器")
     parser.add_argument(
         "--mode",
         choices=["accumulation", "divergence", "new", "breakout"],
-        default="accumulation",
-        help="扫描模式: accumulation=底部蓄力, divergence=MACD背离, new=新币观察清单, breakout=天量回踩",
+        default="divergence",
+        help="扫描模式: divergence=MACD背离(默认), accumulation=底部蓄力, new=新币观察清单, breakout=天量回踩",
     )
     parser.add_argument("--top", type=int, help="输出前N个结果")
     parser.add_argument("--config", default="config.yaml", help="配置文件路径")
@@ -820,14 +1058,33 @@ def main():
         action="store_true",
         help="关闭信号确认层（多指标共振过滤）",
     )
+    parser.add_argument(
+        "--serve",
+        action="store_true",
+        help="常驻模式：APScheduler 定时扫描 + 自动下单 + 订单监控",
+    )
+    parser.add_argument(
+        "--stats",
+        action="store_true",
+        help="查看信号成功率统计（按模式/评分/月份）",
+    )
+    parser.add_argument(
+        "--json-only",
+        action="store_true",
+        help="与 --stats 联用：仅导出 JSON，不打印表格",
+    )
     args = parser.parse_args()
 
-    config, signal_config, new_coin_config, listing_intel_config = load_config(args.config)
+    config, signal_config, new_coin_config, listing_intel_config, trading_config, schedule_config = load_config(args.config)
 
     if args.no_confirm:
         signal_config = replace(signal_config, confirmation=False)
 
-    if args.track:
+    if args.serve:
+        run_serve(config, signal_config, trading_config, schedule_config)
+    elif args.stats:
+        run_stats(json_only=args.json_only)
+    elif args.track:
         show_tracking()
     elif args.history:
         show_history(args.history)
@@ -854,7 +1111,9 @@ def main():
     elif args.mode == "breakout":
         run_breakout(config, signal_config, top_n=args.top, symbols_override=args.symbols)
     elif args.mode == "divergence":
-        run_divergence(config, signal_config, top_n=args.top, symbols_override=args.symbols)
+        signals = run_divergence(config, signal_config, top_n=args.top, symbols_override=args.symbols)
+        if signals and trading_config.enabled:
+            execute_trading_pipeline(signals, trading_config)
     else:
         run(config, signal_config, top_n=args.top, symbols_override=args.symbols)
 
