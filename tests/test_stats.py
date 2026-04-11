@@ -1,8 +1,13 @@
+import json
+import os
+
 from scanner.stats import (
     compute_stats,
     compute_stats_by_mode,
     compute_stats_by_month,
     compute_stats_by_score_tier,
+    export_stats_json,
+    format_stats_report,
 )
 
 
@@ -81,3 +86,28 @@ def test_compute_stats_by_month():
     assert "2026-03" in by_month
     assert by_month["2026-04"]["total"] == 2
     assert by_month["2026-03"]["total"] == 1
+
+
+def test_format_stats_report_contains_key_info():
+    overall = {"total": 10, "wins": 7, "win_rate": 0.7, "avg_pnl_pct": 0.03, "profit_factor": 1.5, "max_gain": 0.1, "max_loss": -0.05}
+    by_mode = {"divergence": {"total": 10, "wins": 7, "win_rate": 0.7, "avg_pnl_pct": 0.03, "profit_factor": 1.5, "max_gain": 0.1, "max_loss": -0.05}}
+    by_score = {"0.8+": {"total": 5, "wins": 4, "win_rate": 0.8, "avg_pnl_pct": 0.04, "profit_factor": 2.0, "max_gain": 0.1, "max_loss": -0.02}}
+    by_month = {"2026-04": {"total": 10, "wins": 7, "win_rate": 0.7, "avg_pnl_pct": 0.03, "profit_factor": 1.5, "max_gain": 0.1, "max_loss": -0.05}}
+
+    report = format_stats_report(overall, by_mode, by_score, by_month)
+    assert "70.0%" in report
+    assert "divergence" in report
+    assert "0.8+" in report
+    assert "2026-04" in report
+
+
+def test_export_stats_json(tmp_path):
+    overall = {"total": 5, "wins": 3, "win_rate": 0.6, "avg_pnl_pct": 0.02, "profit_factor": 1.2, "max_gain": 0.05, "max_loss": -0.03}
+    trades = [{"symbol": "BTC/USDT", "pnl_pct": 0.05}]
+
+    path = export_stats_json(overall, {}, {}, {}, trades=trades, output_dir=str(tmp_path))
+    assert os.path.exists(path)
+    with open(path) as f:
+        data = json.load(f)
+    assert data["overall"]["total"] == 5
+    assert len(data["trades"]) == 1

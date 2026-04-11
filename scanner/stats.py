@@ -1,5 +1,9 @@
 """信号成功率统计分析。"""
 
+import json
+import os
+from datetime import datetime
+
 
 def compute_stats(trades: list[dict]) -> dict:
     if not trades:
@@ -58,3 +62,68 @@ def compute_stats_by_month(trades: list[dict]) -> dict[str, dict]:
         return t.get("closed_at", "")[:7]
     groups = _group_by(trades, month_key)
     return {month: compute_stats(group) for month, group in sorted(groups.items(), reverse=True)}
+
+
+def format_stats_report(
+    overall: dict,
+    by_mode: dict[str, dict],
+    by_score: dict[str, dict],
+    by_month: dict[str, dict],
+) -> str:
+    lines = []
+    lines.append("=== 信号成功率统计 ===")
+    lines.append(
+        f"总交易: {overall['total']}  |  "
+        f"胜率: {overall['win_rate'] * 100:.1f}%  |  "
+        f"平均盈亏: {overall['avg_pnl_pct'] * 100:+.1f}%  |  "
+        f"盈亏比: {overall['profit_factor']:.2f}"
+    )
+    if by_mode:
+        lines.append("")
+        lines.append("[按模式]")
+        lines.append(f"{'模式':<16} {'交易数':>6} {'胜率':>8} {'平均盈亏':>10} {'盈亏比':>8}")
+        for mode, s in by_mode.items():
+            lines.append(
+                f"{mode:<16} {s['total']:>6} {s['win_rate'] * 100:>7.1f}% {s['avg_pnl_pct'] * 100:>+9.1f}% {s['profit_factor']:>8.2f}"
+            )
+    if by_score:
+        lines.append("")
+        lines.append("[按评分]")
+        lines.append(f"{'评分区间':<16} {'交易数':>6} {'胜率':>8} {'平均盈亏':>10} {'盈亏比':>8}")
+        for tier, s in by_score.items():
+            lines.append(
+                f"{tier:<16} {s['total']:>6} {s['win_rate'] * 100:>7.1f}% {s['avg_pnl_pct'] * 100:>+9.1f}% {s['profit_factor']:>8.2f}"
+            )
+    if by_month:
+        lines.append("")
+        lines.append("[按月份]")
+        lines.append(f"{'月份':<16} {'交易数':>6} {'胜率':>8} {'平均盈亏':>10} {'盈亏比':>8}")
+        for month, s in by_month.items():
+            lines.append(
+                f"{month:<16} {s['total']:>6} {s['win_rate'] * 100:>7.1f}% {s['avg_pnl_pct'] * 100:>+9.1f}% {s['profit_factor']:>8.2f}"
+            )
+    return "\n".join(lines)
+
+
+def export_stats_json(
+    overall: dict,
+    by_mode: dict[str, dict],
+    by_score: dict[str, dict],
+    by_month: dict[str, dict],
+    trades: list[dict] | None = None,
+    output_dir: str = "results",
+) -> str:
+    os.makedirs(output_dir, exist_ok=True)
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    path = os.path.join(output_dir, f"stats_{ts}.json")
+    data = {
+        "generated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "overall": overall,
+        "by_mode": by_mode,
+        "by_score_tier": by_score,
+        "by_month": by_month,
+        "trades": trades or [],
+    }
+    with open(path, "w") as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
+    return path
