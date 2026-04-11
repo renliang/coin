@@ -29,7 +29,54 @@ def _get_conn() -> sqlite3.Connection:
             FOREIGN KEY (scan_id) REFERENCES scans(id)
         )
     """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS orders (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            order_id TEXT NOT NULL,
+            symbol TEXT NOT NULL,
+            side TEXT NOT NULL,
+            order_type TEXT NOT NULL,
+            price REAL,
+            amount REAL NOT NULL,
+            leverage INTEGER NOT NULL DEFAULT 1,
+            status TEXT NOT NULL DEFAULT 'open',
+            related_order_id TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        )
+    """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS positions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            symbol TEXT NOT NULL,
+            side TEXT NOT NULL,
+            entry_price REAL NOT NULL,
+            size REAL NOT NULL,
+            leverage INTEGER NOT NULL,
+            score REAL NOT NULL,
+            tp_order_id TEXT,
+            sl_order_id TEXT,
+            status TEXT NOT NULL DEFAULT 'open',
+            opened_at TEXT NOT NULL,
+            closed_at TEXT
+        )
+    """)
     conn.commit()
+
+    # 迁移：positions 表新增列（兼容已有数据库）
+    existing = {row[1] for row in conn.execute("PRAGMA table_info(positions)").fetchall()}
+    migrations = [
+        ("exit_price", "REAL"),
+        ("pnl", "REAL"),
+        ("pnl_pct", "REAL"),
+        ("exit_reason", "TEXT"),
+        ("mode", "TEXT DEFAULT ''"),
+    ]
+    for col_name, col_type in migrations:
+        if col_name not in existing:
+            conn.execute(f"ALTER TABLE positions ADD COLUMN {col_name} {col_type}")
+    conn.commit()
+
     return conn
 
 
@@ -60,6 +107,134 @@ def get_history(symbol: str, limit: int = 10) -> list[dict]:
         WHERE r.symbol = ?
         ORDER BY s.scan_time DESC LIMIT ?
     """, (symbol, limit)).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+def save_order(
+    order_id: str,
+    symbol: str,
+    side: str,
+    order_type: str,
+    price: float | None,
+    amount: float,
+    leverage: int = 1,
+    related_order_id: str | None = None,
+) -> int:
+    """保存一条订单记录，返回本地 id。"""
+    conn = _get_conn()
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    cur = conn.execute(
+        "INSERT INTO orders (order_id, symbol, side, order_type, price, amount, leverage, status, related_order_id, created_at, updated_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, 'open', ?, ?, ?)",
+        (order_id, symbol, side, order_type, price, amount, leverage, related_order_id, now, now),
+    )
+    row_id = cur.lastrowid
+    conn.commit()
+    conn.close()
+    return row_id
+
+
+def update_order_status(order_id: str, status: str) -> None:
+    """更新订单状态。"""
+    conn = _get_conn()
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    conn.execute(
+        "UPDATE orders SET status = ?, updated_at = ? WHERE order_id = ?",
+        (status, now, order_id),
+    )
+    conn.commit()
+    conn.close()
+
+
+def get_open_orders(order_type: str | None = None) -> list[dict]:
+    """获取所有 status='open' 的订单。可按 order_type 过滤。"""
+    conn = _get_conn()
+    if order_type:
+        rows = conn.execute(
+            "SELECT * FROM orders WHERE status = 'open' AND order_type = ? ORDER BY created_at",
+            (order_type,),
+        ).fetchall()
+    else:
+        rows = conn.execute(
+            "SELECT * FROM orders WHERE status = 'open' ORDER BY created_at",
+        ).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+def save_position(
+    symbol: str,
+    side: str,
+    entry_price: float,
+    size: float,
+    leverage: int,
+    score: float,
+    tp_order_id: str | None = None,
+    sl_order_id: str | None = None,
+    mode: str = "",
+) -> int:
+    """保存一条持仓记录，返回本地 id。"""
+    conn = _get_conn()
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    cur = conn.execute(
+        "INSERT INTO positions (symbol, side, entry_price, size, leverage, score, tp_order_id, sl_order_id, status, opened_at, mode) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'open', ?, ?)",
+        (symbol, side, entry_price, size, leverage, score, tp_order_id, sl_order_id, now, mode),
+    )
+    row_id = cur.lastrowid
+    conn.commit()
+    conn.close()
+    return row_id
+
+
+def close_position(
+    symbol: str,
+    exit_price: float | None = None,
+    pnl: float | None = None,
+    pnl_pct: float | None = None,
+    exit_reason: str | None = None,
+) -> None:
+    """关闭某币种的持仓。"""
+    conn = _get_conn()
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    conn.execute(
+        "UPDATE positions SET status = 'closed', closed_at = ?, "
+        "exit_price = ?, pnl = ?, pnl_pct = ?, exit_reason = ? "
+        "WHERE symbol = ? AND status = 'open'",
+        (now, exit_price, pnl, pnl_pct, exit_reason, symbol),
+    )
+    conn.commit()
+    conn.close()
+
+
+def get_open_positions() -> list[dict]:
+    """获取所有 status='open' 的持仓。"""
+    conn = _get_conn()
+    rows = conn.execute(
+        "SELECT * FROM positions WHERE status = 'open' ORDER BY opened_at",
+    ).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+def get_order_by_id(order_id: str) -> dict | None:
+    """按 order_id 查询单条订单。"""
+    conn = _get_conn()
+    row = conn.execute(
+        "SELECT * FROM orders WHERE order_id = ?", (order_id,)
+    ).fetchone()
+    conn.close()
+    return dict(row) if row else None
+
+
+def get_closed_trades() -> list[dict]:
+    """获取所有已关闭且有盈亏记录的持仓。"""
+    conn = _get_conn()
+    rows = conn.execute(
+        "SELECT * FROM positions WHERE status = 'closed' AND pnl_pct IS NOT NULL "
+        "ORDER BY closed_at DESC"
+    ).fetchall()
     conn.close()
     return [dict(r) for r in rows]
 
