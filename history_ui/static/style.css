@@ -125,3 +125,131 @@ tbody tr:hover {
 .pager .btn:hover {
   background: #eff6ff;
 }
+
+/* 顶部导航 */
+.site-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0.75rem 0 1rem;
+  border-bottom: 1px solid #e5e5e5;
+  margin-bottom: 1.25rem;
+}
+
+.site-title {
+  font-size: 1.2rem;
+  font-weight: 700;
+  color: #1a1a1a;
+  text-decoration: none;
+}
+
+.site-title:hover {
+  color: #2563eb;
+}
+
+.site-search {
+  display: flex;
+  gap: 0.4rem;
+}
+
+.site-search input[type="text"] {
+  padding: 0.35rem 0.6rem;
+  border: 1px solid #ccc;
+  border-radius: 4px;
+  min-width: 12rem;
+}
+
+.site-search button {
+  padding: 0.35rem 0.8rem;
+  background: #2563eb;
+  color: #fff;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+  font-weight: 600;
+}
+
+.site-search button:hover {
+  background: #1d4ed8;
+}
+
+.site-main {
+  padding-top: 0.5rem;
+}
+
+/* 币种链接 */
+.symbol-link {
+  color: #2563eb;
+  font-weight: 600;
+  text-decoration: none;
+}
+
+.symbol-link:hover {
+  text-decoration: underline;
+}
+
+/* 详情页顶部 */
+.page-back {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  margin-bottom: 1.25rem;
+}
+
+.page-back a {
+  color: #2563eb;
+  text-decoration: none;
+  font-size: 0.9rem;
+}
+
+.page-back a:hover {
+  text-decoration: underline;
+}
+
+.page-symbol {
+  margin: 0;
+  font-size: 1.35rem;
+}
+
+/* 卡片区块 */
+.card {
+  background: #fff;
+  border-radius: 8px;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08);
+  padding: 1rem 1.25rem;
+  margin-bottom: 1.5rem;
+}
+
+.card-title {
+  margin: 0 0 0.75rem;
+  font-size: 1rem;
+  font-weight: 600;
+}
+
+/* 得分高亮 */
+.score-high {
+  background: #f0fdf4;
+}
+
+.score-high:hover {
+  background: #dcfce7;
+}
+
+.score-low {
+  background: #fefce8;
+}
+
+.score-low:hover {
+  background: #fef9c3;
+}
+
+/* 盈亏颜色 */
+.pnl-pos td:nth-child(5) {
+  color: #16a34a;
+  font-weight: 600;
+}
+
+.pnl-neg td:nth-child(5) {
+  color: #dc2626;
+  font-weight: 600;
+}
