@@ -363,3 +363,35 @@ def get_tracked_symbols() -> list[dict]:
     """).fetchall()
     conn.close()
     return [dict(r) for r in rows]
+
+
+def get_today_scans(mode: str) -> list[dict]:
+    """查询今天该模式最新一次扫描（scan_id 最大）的信号列表。"""
+    today = datetime.now().strftime("%Y-%m-%d")
+    conn = _get_conn()
+    try:
+        row = conn.execute(
+            """
+            SELECT MAX(s.id) AS max_scan_id
+            FROM scans s
+            JOIN scan_results r ON r.scan_id = s.id
+            WHERE r.mode = ? AND s.scan_time >= ?
+            """,
+            (mode, today + " 00:00:00"),
+        ).fetchone()
+        max_scan_id = row["max_scan_id"] if row else None
+        if max_scan_id is None:
+            return []
+        rows = conn.execute(
+            """
+            SELECT r.symbol, r.price, r.score, r.entry_price,
+                   r.stop_loss_price, r.take_profit_price, r.signal_type, r.mode
+            FROM scan_results r
+            WHERE r.scan_id = ?
+            ORDER BY r.score DESC
+            """,
+            (max_scan_id,),
+        ).fetchall()
+        return [dict(r) for r in rows]
+    finally:
+        conn.close()

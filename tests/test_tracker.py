@@ -80,3 +80,47 @@ def test_query_scan_results_returns_new_columns(tmp_db):
     assert "take_profit_price" in row
     assert "signal_type" in row
     assert abs(row["entry_price"] - 97.5) < 0.001
+
+
+def test_query_scan_results_mode_filter(tmp_db):
+    """mode 筛选应只返回对应模式的记录。"""
+    from scanner.tracker import save_scan, query_scan_results
+    save_scan([_make_signal("A/USDT")], mode="accumulation")
+    save_scan([_make_signal("B/USDT")], mode="divergence")
+
+    rows, total = query_scan_results(mode="accumulation")
+    assert total == 1
+    assert rows[0]["symbol"] == "A/USDT"
+
+
+def test_get_today_scans_returns_latest_scan(tmp_db):
+    """get_today_scans 应返回今天该模式最新一次扫描的信号列表。"""
+    from scanner.tracker import save_scan, get_today_scans
+    save_scan([_make_signal("A/USDT"), _make_signal("B/USDT")], mode="accumulation")
+    save_scan([_make_signal("C/USDT")], mode="accumulation")  # 第二次扫描
+
+    rows = get_today_scans("accumulation")
+    # 应返回最新一次扫描（scan_id 最大），即只有 C/USDT
+    assert len(rows) == 1
+    assert rows[0]["symbol"] == "C/USDT"
+
+
+def test_get_today_scans_empty_for_other_mode(tmp_db):
+    """get_today_scans 对没有扫描记录的模式返回空列表。"""
+    from scanner.tracker import save_scan, get_today_scans
+    save_scan([_make_signal("A/USDT")], mode="accumulation")
+
+    rows = get_today_scans("divergence")
+    assert rows == []
+
+
+def test_get_today_scans_includes_signal_columns(tmp_db):
+    """get_today_scans 返回的 dict 包含 entry_price / stop_loss_price / take_profit_price。"""
+    from scanner.tracker import save_scan, get_today_scans
+    save_scan([_make_signal(entry_price=97.5, stop_loss_price=92.0, take_profit_price=109.0)], mode="divergence")
+
+    rows = get_today_scans("divergence")
+    assert len(rows) == 1
+    assert abs(rows[0]["entry_price"] - 97.5) < 0.001
+    assert abs(rows[0]["stop_loss_price"] - 92.0) < 0.001
+    assert abs(rows[0]["take_profit_price"] - 109.0) < 0.001
