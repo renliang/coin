@@ -96,6 +96,17 @@ def generate_signals(
                 sl_price = entry * (1 - signal_config.stop_loss)
                 tp_price = entry * (1 + signal_config.take_profit)
 
+        # ATR 止损截断：若止损距离超过 max_stop_loss，收紧到上限
+        sl_capped = False
+        if use_atr:
+            sl_dist = abs(sl_price - entry) / entry
+            if sl_dist > signal_config.max_stop_loss:
+                if is_bearish:
+                    sl_price = entry * (1 + signal_config.max_stop_loss)
+                else:
+                    sl_price = entry * (1 - signal_config.max_stop_loss)
+                sl_capped = True
+
         signals.append(TradeSignal(
             symbol=m["symbol"],
             price=price,
@@ -109,5 +120,6 @@ def generate_signals(
             hold_days=signal_config.hold_days,
             signal_type=signal_type,
             mode=m.get("mode", ""),
+            sl_capped=sl_capped,
         ))
     return signals
