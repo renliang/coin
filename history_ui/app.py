@@ -2,7 +2,12 @@ import os
 
 from flask import Flask, redirect, render_template, request, url_for
 
-from scanner.tracker import get_closed_trades_by_symbol, get_tracked_symbols, query_scan_results
+from scanner.tracker import (
+    get_closed_trades_by_symbol,
+    get_today_scans,
+    get_tracked_symbols,
+    query_scan_results,
+)
 
 
 def create_app() -> Flask:
@@ -14,8 +19,50 @@ def create_app() -> Flask:
 
     @app.route("/")
     def index():
-        symbols = get_tracked_symbols()
-        return render_template("index.html", symbols=symbols)
+        return render_template(
+            "index.html",
+            accum=get_today_scans("accumulation"),
+            div=get_today_scans("divergence"),
+            breakout=get_today_scans("breakout"),
+        )
+
+    @app.route("/history")
+    def history():
+        symbol = request.args.get("symbol", "").strip().upper().replace("-", "/")
+        mode = request.args.get("mode", "").strip()
+        scan_time_from = request.args.get("scan_time_from", "").strip()
+        scan_time_to = request.args.get("scan_time_to", "").strip()
+        try:
+            page = max(1, int(request.args.get("page", 1)))
+        except ValueError:
+            page = 1
+        try:
+            per_page = min(200, max(1, int(request.args.get("per_page", 50))))
+        except ValueError:
+            per_page = 50
+
+        rows, total = query_scan_results(
+            symbol=symbol or None,
+            mode=mode or None,
+            scan_time_from=scan_time_from or None,
+            scan_time_to=scan_time_to or None,
+            page=page,
+            per_page=per_page,
+        )
+        total_pages = max(1, (total + per_page - 1) // per_page)
+
+        return render_template(
+            "history.html",
+            rows=rows,
+            total=total,
+            page=page,
+            total_pages=total_pages,
+            per_page_eff=per_page,
+            symbol=symbol,
+            mode=mode,
+            scan_time_from=scan_time_from,
+            scan_time_to=scan_time_to,
+        )
 
     @app.route("/search")
     def search():
