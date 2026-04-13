@@ -245,7 +245,7 @@ def run(config: dict, signal_config: SignalConfig, top_n: int | None = None, sym
             f"{s.price:.4f}",
             f"{s.score:.2f}",
             f"{s.entry_price:.4f}",
-            f"{s.stop_loss_price:.4f}",
+            f"{s.stop_loss_price:.4f}" + (" [已收紧]" if s.sl_capped else ""),
             f"{s.take_profit_price:.4f}",
             s.hold_days,
         ])
@@ -405,7 +405,7 @@ def run_divergence(config: dict, signal_config: SignalConfig, top_n: int | None 
             f"{s.price:.4f}",
             f"{s.score:.2f}",
             f"{s.entry_price:.4f}",
-            f"{s.stop_loss_price:.4f}",
+            f"{s.stop_loss_price:.4f}" + (" [已收紧]" if s.sl_capped else ""),
             f"{s.take_profit_price:.4f}",
             s.hold_days,
         ])
