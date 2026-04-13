@@ -20,8 +20,6 @@ from scanner.tracker import save_scan, get_tracked_symbols, get_history, get_clo
 from scanner.signal import SignalConfig, TradeSignal, generate_signals, calculate_atr
 from scanner.confirmation import confirm_signal
 from scanner.breakout import detect_breakout
-from scanner.new_coin import NewCoinConfig, build_new_listings_payload, screen_new_listings
-from scanner.listing_intel import ListingIntelConfig, enrich_new_listings_payload
 from scanner.stats import (
     compute_stats,
     compute_stats_by_mode,
@@ -65,7 +63,7 @@ class ScheduleConfig:
 
 def load_config(
     path: str = "config.yaml",
-) -> tuple[dict, SignalConfig, NewCoinConfig, ListingIntelConfig, TradingConfig, ScheduleConfig]:
+) -> tuple[dict, SignalConfig, TradingConfig, ScheduleConfig]:
     with open(path) as f:
         raw = yaml.safe_load(f)
     proxy = (raw.get("proxy") or {}).get("https", "")
@@ -84,11 +82,6 @@ def load_config(
         atr_tp_multiplier=sig.get("atr_tp_multiplier", 3.0),
         confirmation=sig.get("confirmation", True),
         confirmation_min_pass=sig.get("confirmation_min_pass", 3),
-    )
-    new_coin = NewCoinConfig.from_mapping(raw.get("new_coin"))
-    listing_intel = ListingIntelConfig.from_mapping(
-        raw.get("listing_intel"),
-        proxy_https=proxy or None,
     )
     scanner_cfg = dict(raw.get("scanner", {}))
     if "breakout" in raw:
@@ -119,7 +112,7 @@ def load_config(
         monitor_interval=s.get("monitor_interval", 60),
     )
 
-    return scanner_cfg, signal_config, new_coin, listing_intel, trading_config, schedule_config
+    return scanner_cfg, signal_config, trading_config, schedule_config
 
 
 def run(config: dict, signal_config: SignalConfig, top_n: int | None = None, symbols_override: list[str] | None = None):
@@ -669,100 +662,6 @@ def show_history(symbol: str):
     print(tabulate(table_data, headers=headers, tablefmt="simple"))
 
 
-def run_new_coin_observation(
-    new_cfg: NewCoinConfig,
-    top_n: int | None = None,
-    *,
-    listing_intel_cfg: ListingIntelConfig | None = None,
-):
-    """新币观察清单（不跑蓄力/背离，不生成交易信号）。"""
-    cfg = replace(new_cfg, top_n=top_n) if top_n is not None else new_cfg
-    intel_cfg = listing_intel_cfg or ListingIntelConfig()
-    step_tag = "[1/2]" if intel_cfg.enabled else "[1/1]"
-    print(f"{step_tag} 新币观察清单（Binance U本位永续∩现货，上架≤{cfg.max_listing_days}天）...")
-    if intel_cfg.enabled:
-        print(
-            "       L2 增强已启用：L2a 公告 / L2b DexScreener 链上池近似 / L2c 规则尽调分"
-            "（Binance CMS 可能被 WAF 拦截，可配代理或 manual_overlay_csv）。"
-        )
-    rows = screen_new_listings(cfg)
-    if not rows:
-        print("\n没有符合新币条件的交易对。")
-        print(
-            "提示: 宇宙为「Binance U本位 USDT 永续 base ∩ Binance 现货」；另有上架天数、24h 成交额等门槛。"
-            "可在 config.yaml 的 new_coin 段放宽 max_listing_days / min_quote_volume_24h；"
-            "代理或限速导致单币请求失败时，有效条数也会偏少。"
-        )
-        return
-
-    payload = build_new_listings_payload(rows)
-    if intel_cfg.enabled:
-        print("[2/2] L2 增强（公告 / 链上 / 尽调分）...")
-        payload = enrich_new_listings_payload(payload, intel_cfg)
-        rows = payload["rows"]
-        st = (payload.get("meta") or {}).get("intel_stats") or {}
-        if st:
-            print(
-                f"       intel: 尝试 {st.get('rows_attempted')} 行 | "
-                f"L2a 命中 {st.get('l2a_matched')} | L2b 命中 {st.get('l2b_matched')} | "
-                f"L2c 计分 {st.get('l2c_scored')}",
-            )
-            err = st.get("source_errors") or []
-            if err:
-                print(f"       警告: {err[:3]}{'…' if len(err) > 3 else ''}")
-
-    table_data = []
-    for i, r in enumerate(rows, 1):
-        chg = r.get("change_24h_pct")
-        chg_s = f"{chg:.2%}" if chg is not None else "-"
-        avg7 = r.get("avg_quote_volume_7d")
-        avg7_s = f"{avg7:,.0f}" if avg7 is not None else "-"
-        mcap = r.get("market_cap_usd") or 0.0
-        mcap_s = f"{mcap / 1e6:.2f}M" if mcap else "-"
-        row_out = [
-            i,
-            r["symbol"],
-            r["listing_days"],
-            f"{r['price']:.6f}",
-            f"{r['quote_volume_24h']:,.0f}",
-            avg7_s,
-            chg_s,
-            mcap_s,
-        ]
-        if intel_cfg.enabled and intel_cfg.l2c_dd_score:
-            row_out.extend([
-                r.get("dd_score", "-"),
-                r.get("trust_tier", "-"),
-            ])
-        table_data.append(row_out)
-    headers = [
-        "#", "交易对", "上架天数", "价格", "24h额", "7d均额*", "24h涨跌", "市值",
-    ]
-    if intel_cfg.enabled and intel_cfg.l2c_dd_score:
-        headers.extend(["DD分", "信任档"])
-    print(f"\n共 {len(rows)} 条（*7d均额为近似 quote 额；市值来自 CoinGecko 分页命中）:\n")
-    print(tabulate(table_data, headers=headers, tablefmt="simple"))
-    if len(rows) < cfg.top_n:
-        vol_s = f"{cfg.min_quote_volume_24h:,.0f}"
-        print(
-            f"\n说明: 当前仅 {len(rows)} 条，少于 top_n={cfg.top_n}，表示通过筛选的候选本就这些（非截断误伤）。"
-            f"常见原因：交集宇宙内同时满足 上架≤{cfg.max_listing_days} 天、24h 成交额≥{vol_s} USDT 的币较少；"
-            "或部分交易对请求失败被跳过。可调大 max_listing_days / 调小 min_quote_volume_24h，或检查代理与 request_delay。"
-        )
-
-    os.makedirs("results", exist_ok=True)
-    ts = datetime.now().strftime("%Y-%m-%d_%H%M%S")
-    json_path = f"results/new_listings_{ts}.json"
-    with open(json_path, "w") as f:
-        json.dump(payload, f, ensure_ascii=False, indent=2)
-    txt_path = f"results/new_listings_{ts}.txt"
-    with open(txt_path, "w") as f:
-        f.write(f"扫描时间: {ts}\n模式: new_listings\n\n")
-        f.write(tabulate(table_data, headers=headers, tablefmt="simple"))
-        f.write("\n")
-    print(f"\n结果已保存到 {json_path} 和 {txt_path}")
-
-
 def run_backtest_cli(
     config: dict,
     signal_config: SignalConfig,
@@ -1058,9 +957,9 @@ def main():
     parser = argparse.ArgumentParser(description="币种形态筛选器")
     parser.add_argument(
         "--mode",
-        choices=["accumulation", "divergence", "new", "breakout"],
+        choices=["accumulation", "divergence", "breakout"],
         default="divergence",
-        help="扫描模式: divergence=MACD背离(默认), accumulation=底部蓄力, new=新币观察清单, breakout=天量回踩",
+        help="扫描模式: divergence=MACD背离(默认), accumulation=底部蓄力, breakout=天量回踩",
     )
     parser.add_argument("--top", type=int, help="输出前N个结果")
     parser.add_argument("--config", default="config.yaml", help="配置文件路径")
@@ -1079,11 +978,6 @@ def main():
         help="与 --backtest 联用：对 key scanner 参数输出命中数敏感性表",
     )
     parser.add_argument("--days", type=int, default=180, help="回测历史K线天数（默认180）")
-    parser.add_argument(
-        "--no-intel",
-        action="store_true",
-        help="与 --mode new 联用：关闭 L2 增强（公告/链上/尽调分）",
-    )
     parser.add_argument(
         "--no-confirm",
         action="store_true",
@@ -1106,7 +1000,7 @@ def main():
     )
     args = parser.parse_args()
 
-    config, signal_config, new_coin_config, listing_intel_config, trading_config, schedule_config = load_config(args.config)
+    config, signal_config, trading_config, schedule_config = load_config(args.config)
 
     if args.no_confirm:
         signal_config = replace(signal_config, confirmation=False)
@@ -1127,17 +1021,6 @@ def main():
             symbols_override=args.symbols,
             verify_signal=args.verify_signal,
             run_sensitivity=args.sensitivity,
-        )
-    elif args.mode == "new":
-        intel_cfg = (
-            replace(listing_intel_config, enabled=False)
-            if args.no_intel
-            else listing_intel_config
-        )
-        run_new_coin_observation(
-            new_coin_config,
-            top_n=args.top,
-            listing_intel_cfg=intel_cfg,
         )
     elif args.mode == "breakout":
         run_breakout(config, signal_config, top_n=args.top, symbols_override=args.symbols)
