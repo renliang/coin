@@ -307,28 +307,26 @@ def get_tracked_symbols() -> list[dict]:
     """获取所有被跟踪的币种及其出现次数、最新价格和最新得分"""
     conn = _get_conn()
     rows = conn.execute("""
+        WITH ranked AS (
+            SELECT
+                r.symbol,
+                r.price,
+                r.score,
+                s.scan_time,
+                ROW_NUMBER() OVER (PARTITION BY r.symbol ORDER BY s.scan_time DESC) AS rn_last,
+                ROW_NUMBER() OVER (PARTITION BY r.symbol ORDER BY s.scan_time ASC) AS rn_first
+            FROM scan_results r
+            JOIN scans s ON r.scan_id = s.id
+        )
         SELECT
-            r.symbol,
+            symbol,
             COUNT(*) AS times,
-            MAX(s.scan_time) AS last_seen,
-            MAX(CASE WHEN s.scan_time = (
-                SELECT MAX(s2.scan_time) FROM scan_results r2
-                JOIN scans s2 ON r2.scan_id = s2.id
-                WHERE r2.symbol = r.symbol
-            ) THEN r.price END) AS last_price,
-            MIN(CASE WHEN s.scan_time = (
-                SELECT MIN(s2.scan_time) FROM scan_results r2
-                JOIN scans s2 ON r2.scan_id = s2.id
-                WHERE r2.symbol = r.symbol
-            ) THEN r.price END) AS first_price,
-            MAX(CASE WHEN s.scan_time = (
-                SELECT MAX(s2.scan_time) FROM scan_results r2
-                JOIN scans s2 ON r2.scan_id = s2.id
-                WHERE r2.symbol = r.symbol
-            ) THEN r.score END) AS last_score
-        FROM scan_results r
-        JOIN scans s ON r.scan_id = s.id
-        GROUP BY r.symbol
+            MAX(scan_time) AS last_seen,
+            MAX(CASE WHEN rn_last = 1 THEN price END) AS last_price,
+            MAX(CASE WHEN rn_first = 1 THEN price END) AS first_price,
+            MAX(CASE WHEN rn_last = 1 THEN score END) AS last_score
+        FROM ranked
+        GROUP BY symbol
         ORDER BY times DESC
     """).fetchall()
     conn.close()
