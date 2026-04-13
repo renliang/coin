@@ -224,10 +224,6 @@ def run(config: dict, signal_config: SignalConfig, top_n: int | None = None, sym
         print("\n确认层过滤后没有剩余信号。")
         return
 
-    # 保存到数据库
-    scan_id = save_scan(ranked)
-    print(f"\n[跟踪] 本次扫描ID: {scan_id}，已记录 {len(ranked)} 个币种及价格")
-
     # 信号过滤
     signals = generate_signals(ranked, signal_config)
     print(f"[信号] 评分≥{signal_config.min_score} 过滤: {len(ranked)} -> {len(signals)} 个")
@@ -235,6 +231,10 @@ def run(config: dict, signal_config: SignalConfig, top_n: int | None = None, sym
     if not signals:
         print("\n没有达到信号门槛的币种。")
         return
+
+    # 保存到数据库（存信号，含点位）
+    scan_id = save_scan(signals)
+    print(f"\n[跟踪] 本次扫描ID: {scan_id}，已记录 {len(signals)} 个信号")
 
     # 输出交易建议表格
     table_data = []
@@ -383,10 +383,6 @@ def run_divergence(config: dict, signal_config: SignalConfig, top_n: int | None 
         print("\n确认层过滤后没有剩余信号。")
         return
 
-    # 保存到数据库
-    scan_id = save_scan(ranked, mode="divergence")
-    print(f"\n[跟踪] 本次扫描ID: {scan_id}，已记录 {len(ranked)} 个币种及价格")
-
     # 信号过滤
     signals = generate_signals(ranked, signal_config)
     print(f"[信号] 评分≥{signal_config.min_score} 过滤: {len(ranked)} -> {len(signals)} 个")
@@ -394,6 +390,10 @@ def run_divergence(config: dict, signal_config: SignalConfig, top_n: int | None 
     if not signals:
         print("\n没有达到信号门槛的币种。")
         return []
+
+    # 保存到数据库（存信号，含点位）
+    scan_id = save_scan(signals, mode="divergence")
+    print(f"\n[跟踪] 本次扫描ID: {scan_id}，已记录 {len(signals)} 个信号")
 
     # 输出交易建议表格
     table_data = []
@@ -550,10 +550,6 @@ def run_breakout(config: dict, signal_config: SignalConfig, top_n: int | None = 
         print("\n确认层过滤后没有剩余信号。")
         return
 
-    # 保存到数据库
-    scan_id = save_scan(ranked, mode="breakout")
-    print(f"\n[跟踪] 本次扫描ID: {scan_id}，已记录 {len(ranked)} 个币种及价格")
-
     # 信号过滤
     signals = generate_signals(ranked, signal_config)
     print(f"[信号] 评分≥{signal_config.min_score} 过滤: {len(ranked)} -> {len(signals)} 个")
@@ -567,6 +563,10 @@ def run_breakout(config: dict, signal_config: SignalConfig, top_n: int | None = 
         m = next(r for r in ranked if r["symbol"] == s.symbol)
         s.stop_loss_price = round(m["pullback_low"] * 0.97, 6)
         s.take_profit_price = round(m["spike_high"], 6)
+
+    # 保存到数据库（存信号，含覆写后的点位）
+    scan_id = save_scan(signals, mode="breakout")
+    print(f"\n[跟踪] 本次扫描ID: {scan_id}，已记录 {len(signals)} 个信号")
 
     # 输出表格
     table_data = []
