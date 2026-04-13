@@ -15,6 +15,7 @@ class SignalConfig:
     atr_tp_multiplier: float = 3.0
     confirmation: bool = True
     confirmation_min_pass: int = 4
+    max_stop_loss: float = 0.05
 
 
 def calculate_atr(df: pd.DataFrame, period: int = 14) -> float:
@@ -46,6 +47,7 @@ class TradeSignal:
     hold_days: int
     signal_type: str = ""
     mode: str = ""
+    sl_capped: bool = False
 
 
 def _entry_discount(score: float) -> float:

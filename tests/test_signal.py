@@ -148,3 +148,57 @@ def test_calculate_atr():
     atr = calculate_atr(df, period=14)
     # high-low=3, prev_close=11, |high-prev|=1, |low-prev|=2 → TR=3 for all rows
     assert abs(atr - 3.0) < 0.01
+
+
+def test_sl_capped_when_atr_exceeds_limit():
+    """ATR 止损超出 max_stop_loss 时，止损被截断且 sl_capped=True。"""
+    # price=100, score=0.70 → entry=97.5, ATR=10 → raw_sl=97.5-2*10=77.5 (距离20.5%) > 5%
+    # capped: sl = 97.5 * (1 - 0.05) = 92.625
+    matches = [
+        {"symbol": "X/USDT", "price": 100.0, "score": 0.70, "atr": 10.0,
+         "drop_pct": 0.10, "volume_ratio": 0.3, "window_days": 14},
+    ]
+    config = SignalConfig(min_score=0.6, atr_sl_multiplier=2.0, atr_tp_multiplier=3.0,
+                          max_stop_loss=0.05)
+    signals = generate_signals(matches, config)
+
+    assert len(signals) == 1
+    s = signals[0]
+    assert s.sl_capped is True
+    assert abs(s.stop_loss_price - 92.625) < 0.01   # 97.5 * 0.95
+
+
+def test_sl_not_capped_when_within_limit():
+    """ATR 止损在 max_stop_loss 以内时，止损不截断且 sl_capped=False。"""
+    # price=100, score=0.70 → entry=97.5, ATR=2 → raw_sl=93.5 (距离4.1%) < 5%
+    matches = [
+        {"symbol": "X/USDT", "price": 100.0, "score": 0.70, "atr": 2.0,
+         "drop_pct": 0.10, "volume_ratio": 0.3, "window_days": 14},
+    ]
+    config = SignalConfig(min_score=0.6, atr_sl_multiplier=2.0, atr_tp_multiplier=3.0,
+                          max_stop_loss=0.05)
+    signals = generate_signals(matches, config)
+
+    assert len(signals) == 1
+    s = signals[0]
+    assert s.sl_capped is False
+    assert abs(s.stop_loss_price - 93.5) < 0.01   # 97.5 - 2*2.0，未截断
+
+
+def test_bearish_sl_capped():
+    """顶背离 ATR 止损超出 max_stop_loss 时截断，sl_capped=True。"""
+    # price=100, score=0.70 → entry=102.5, ATR=10 → raw_sl=122.5 (距离19.5%) > 5%
+    # capped: sl = 102.5 * (1 + 0.05) = 107.625
+    matches = [
+        {"symbol": "X/USDT", "price": 100.0, "score": 0.70, "atr": 10.0,
+         "drop_pct": 0.0, "volume_ratio": 0.0, "window_days": 0,
+         "signal_type": "顶背离", "mode": "divergence"},
+    ]
+    config = SignalConfig(min_score=0.6, atr_sl_multiplier=2.0, atr_tp_multiplier=3.0,
+                          max_stop_loss=0.05)
+    signals = generate_signals(matches, config)
+
+    assert len(signals) == 1
+    s = signals[0]
+    assert s.sl_capped is True
+    assert abs(s.stop_loss_price - 107.625) < 0.01   # 102.5 * 1.05
