@@ -304,7 +304,7 @@ def get_closed_trades() -> list[dict]:
 
 
 def get_tracked_symbols() -> list[dict]:
-    """获取所有被跟踪的币种及其出现次数和最新价格"""
+    """获取所有被跟踪的币种及其出现次数、最新价格和最新得分"""
     conn = _get_conn()
     rows = conn.execute("""
         SELECT r.symbol, COUNT(*) as times,
@@ -312,7 +312,9 @@ def get_tracked_symbols() -> list[dict]:
                (SELECT r2.price FROM scan_results r2 JOIN scans s2 ON r2.scan_id = s2.id
                 WHERE r2.symbol = r.symbol ORDER BY s2.scan_time DESC LIMIT 1) as last_price,
                (SELECT r2.price FROM scan_results r2 JOIN scans s2 ON r2.scan_id = s2.id
-                WHERE r2.symbol = r.symbol ORDER BY s2.scan_time ASC LIMIT 1) as first_price
+                WHERE r2.symbol = r.symbol ORDER BY s2.scan_time ASC LIMIT 1) as first_price,
+               (SELECT r2.score FROM scan_results r2 JOIN scans s2 ON r2.scan_id = s2.id
+                WHERE r2.symbol = r.symbol ORDER BY s2.scan_time DESC LIMIT 1) as last_score
         FROM scan_results r JOIN scans s ON r.scan_id = s.id
         GROUP BY r.symbol
         ORDER BY times DESC
