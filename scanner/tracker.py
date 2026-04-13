@@ -96,23 +96,25 @@ def _get_conn() -> sqlite3.Connection:
 def save_scan(signals: list, mode: str = "accumulation") -> int:
     """保存一次扫描结果（TradeSignal 列表），返回 scan_id。"""
     conn = _get_conn()
-    ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    cur = conn.execute("INSERT INTO scans (scan_time) VALUES (?)", (ts,))
-    scan_id = cur.lastrowid
-    for s in signals:
-        conn.execute(
-            "INSERT INTO scan_results "
-            "(scan_id, symbol, price, market_cap_m, drop_pct, volume_ratio, window_days, score, mode, "
-            "entry_price, stop_loss_price, take_profit_price, signal_type) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            (scan_id, s.symbol, s.price, getattr(s, "market_cap_m", 0),
-             s.drop_pct, s.volume_ratio, s.window_days, s.score, mode,
-             s.entry_price, s.stop_loss_price, s.take_profit_price,
-             getattr(s, "signal_type", "")),
-        )
-    conn.commit()
-    conn.close()
-    return scan_id
+    try:
+        ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        cur = conn.execute("INSERT INTO scans (scan_time) VALUES (?)", (ts,))
+        scan_id = cur.lastrowid
+        for s in signals:
+            conn.execute(
+                "INSERT INTO scan_results "
+                "(scan_id, symbol, price, market_cap_m, drop_pct, volume_ratio, window_days, score, mode, "
+                "entry_price, stop_loss_price, take_profit_price, signal_type) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (scan_id, s.symbol, s.price, s.market_cap_m,
+                 s.drop_pct, s.volume_ratio, s.window_days, s.score, mode,
+                 s.entry_price, s.stop_loss_price, s.take_profit_price,
+                 s.signal_type),
+            )
+        conn.commit()
+        return scan_id
+    finally:
+        conn.close()
 
 
 def get_history(symbol: str, limit: int = 10) -> list[dict]:
