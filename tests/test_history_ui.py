@@ -72,6 +72,14 @@ def temp_db(monkeypatch, tmp_path: Path) -> Path:
             "volume_ratio, window_days, score, mode) VALUES (?,?,?,?,?,?,?,?,?)",
             (sid, sym, 100.0, 1.0, 0.1, 0.2, 30, 0.65, mode),
         )
+    conn.execute(
+        "INSERT INTO positions (symbol, side, entry_price, size, leverage, score, "
+        "status, opened_at, closed_at, exit_price, pnl, pnl_pct, exit_reason) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        ("BTC/USDT", "long", 95000.0, 0.01, 10, 0.82,
+         "closed", "2026-01-10 09:00:00", "2026-01-11 09:00:00",
+         98000.0, 30.0, 3.16, "TP"),
+    )
     conn.commit()
     conn.close()
     return Path(db_path)
@@ -136,3 +144,41 @@ def test_history_index_shows_all_symbols(temp_db, monkeypatch):
     assert "ETH/USDT".encode("utf-8") in r.data
     # 显示出现次数
     assert "2".encode("utf-8") in r.data  # BTC/USDT 出现 2 次
+
+
+def test_coin_detail_200(temp_db, monkeypatch):
+    monkeypatch.setattr(tracker, "DB_PATH", str(temp_db))
+    app = create_app()
+    app.config["TESTING"] = True
+    client = app.test_client()
+    r = client.get("/coin/BTC/USDT")
+    assert r.status_code == 200
+    assert "BTC/USDT".encode("utf-8") in r.data
+    # 扫描记录区块
+    assert "扫描记录".encode("utf-8") in r.data
+    # 持仓历史区块
+    assert "持仓历史".encode("utf-8") in r.data
+
+
+def test_coin_detail_shows_scan_and_trade(temp_db, monkeypatch):
+    monkeypatch.setattr(tracker, "DB_PATH", str(temp_db))
+    app = create_app()
+    app.config["TESTING"] = True
+    client = app.test_client()
+    r = client.get("/coin/BTC/USDT")
+    assert r.status_code == 200
+    # 有 2 条扫描记录（mode=accumulation 出现两次）
+    assert r.data.count(b"accumulation") >= 2
+    # 有 1 条持仓记录（TP）
+    assert "TP".encode("utf-8") in r.data
+    assert "3.16".encode("utf-8") in r.data
+
+
+def test_search_redirects_to_coin_detail(temp_db, monkeypatch):
+    monkeypatch.setattr(tracker, "DB_PATH", str(temp_db))
+    app = create_app()
+    app.config["TESTING"] = True
+    client = app.test_client()
+    r = client.get("/search?symbol=BTC%2FUSDT")
+    assert r.status_code == 302
+    assert "/coin/BTC/USDT" in r.headers["Location"]

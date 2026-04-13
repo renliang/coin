@@ -1,0 +1,86 @@
+{% extends "base.html" %}
+{% block title %}{{ symbol }} — 扫描历史{% endblock %}
+{% block content %}
+<div class="page-back">
+  <a href="{{ url_for('index') }}">← 返回列表</a>
+  <h2 class="page-symbol">{{ symbol }}</h2>
+</div>
+
+<section class="card">
+  <h3 class="card-title">扫描记录（{{ scans|length }} 条）</h3>
+  {% if scans %}
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr>
+          <th>扫描时间</th>
+          <th>分数</th>
+          <th>跌幅%</th>
+          <th>量比</th>
+          <th>窗口天</th>
+          <th>模式</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for row in scans %}
+        <tr class="
+          {%- if row.score >= 0.75 %} score-high
+          {%- elif row.score <= 0.60 %} score-low
+          {%- endif %}">
+          <td>{{ row.scan_time }}</td>
+          <td>{{ '%.4f'|format(row.score) }}</td>
+          <td>{{ '%.2f'|format(row.drop_pct) }}</td>
+          <td>{{ '%.4f'|format(row.volume_ratio) }}</td>
+          <td>{{ row.window_days }}</td>
+          <td>{{ row.mode }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+  <p class="muted">暂无扫描记录</p>
+  {% endif %}
+</section>
+
+<section class="card">
+  <h3 class="card-title">持仓历史（{{ trades|length }} 条）</h3>
+  {% if trades %}
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr>
+          <th>开仓时间</th>
+          <th>方向</th>
+          <th>入场价</th>
+          <th>平仓价</th>
+          <th>盈亏%</th>
+          <th>平仓原因</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for t in trades %}
+        <tr class="
+          {%- if t.pnl_pct is not none and t.pnl_pct > 0 %} pnl-pos
+          {%- elif t.pnl_pct is not none and t.pnl_pct < 0 %} pnl-neg
+          {%- endif %}">
+          <td>{{ t.opened_at }}</td>
+          <td>{{ t.side }}</td>
+          <td>{{ '%.6f'|format(t.entry_price) }}</td>
+          <td>{{ '%.6f'|format(t.exit_price) if t.exit_price is not none else '—' }}</td>
+          <td>
+            {%- if t.pnl_pct is not none -%}
+              {%- if t.pnl_pct > 0 %}+{% endif %}{{ '%.2f'|format(t.pnl_pct) }}%
+            {%- else -%}—{%- endif -%}
+          </td>
+          <td>{{ t.exit_reason if t.exit_reason else '—' }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+  <p class="muted">暂无持仓历史</p>
+  {% endif %}
+</section>
+{% endblock %}
