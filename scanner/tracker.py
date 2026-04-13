@@ -77,21 +77,38 @@ def _get_conn() -> sqlite3.Connection:
             conn.execute(f"ALTER TABLE positions ADD COLUMN {col_name} {col_type}")
     conn.commit()
 
+    # 迁移：scan_results 表新增信号列
+    sr_existing = {row[1] for row in conn.execute("PRAGMA table_info(scan_results)").fetchall()}
+    sr_migrations = [
+        ("entry_price",       "REAL"),
+        ("stop_loss_price",   "REAL"),
+        ("take_profit_price", "REAL"),
+        ("signal_type",       "TEXT DEFAULT ''"),
+    ]
+    for col_name, col_type in sr_migrations:
+        if col_name not in sr_existing:
+            conn.execute(f"ALTER TABLE scan_results ADD COLUMN {col_name} {col_type}")
+    conn.commit()
+
     return conn
 
 
-def save_scan(results: list[dict], mode: str = "accumulation") -> int:
-    """保存一次扫描结果，返回scan_id"""
+def save_scan(signals: list, mode: str = "accumulation") -> int:
+    """保存一次扫描结果（TradeSignal 列表），返回 scan_id。"""
     conn = _get_conn()
     ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     cur = conn.execute("INSERT INTO scans (scan_time) VALUES (?)", (ts,))
     scan_id = cur.lastrowid
-    for r in results:
+    for s in signals:
         conn.execute(
-            "INSERT INTO scan_results (scan_id, symbol, price, market_cap_m, drop_pct, volume_ratio, window_days, score, mode) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            (scan_id, r["symbol"], r["price"], r.get("market_cap_m", 0),
-             r["drop_pct"], r["volume_ratio"], r["window_days"], r["score"], mode),
+            "INSERT INTO scan_results "
+            "(scan_id, symbol, price, market_cap_m, drop_pct, volume_ratio, window_days, score, mode, "
+            "entry_price, stop_loss_price, take_profit_price, signal_type) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (scan_id, s.symbol, s.price, getattr(s, "market_cap_m", 0),
+             s.drop_pct, s.volume_ratio, s.window_days, s.score, mode,
+             s.entry_price, s.stop_loss_price, s.take_profit_price,
+             getattr(s, "signal_type", "")),
         )
     conn.commit()
     conn.close()
@@ -163,7 +180,8 @@ def query_scan_results(
     rows = conn.execute(
         f"""
         SELECT s.scan_time, r.symbol, r.price, r.market_cap_m, r.drop_pct,
-               r.volume_ratio, r.window_days, r.score, r.mode
+               r.volume_ratio, r.window_days, r.score, r.mode,
+               r.entry_price, r.stop_loss_price, r.take_profit_price, r.signal_type
         FROM scan_results r JOIN scans s ON r.scan_id = s.id
         {where_sql}
         ORDER BY s.scan_time DESC
