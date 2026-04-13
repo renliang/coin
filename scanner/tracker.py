@@ -303,6 +303,18 @@ def get_closed_trades() -> list[dict]:
     return [dict(r) for r in rows]
 
 
+def get_closed_trades_by_symbol(symbol: str) -> list[dict]:
+    """获取指定币种所有已关闭且有盈亏记录的持仓。"""
+    conn = _get_conn()
+    rows = conn.execute(
+        "SELECT * FROM positions WHERE status = 'closed' AND pnl_pct IS NOT NULL "
+        "AND symbol = ? ORDER BY closed_at DESC",
+        (symbol,),
+    ).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
 def get_tracked_symbols() -> list[dict]:
     """获取所有被跟踪的币种及其出现次数、最新价格和最新得分"""
     conn = _get_conn()
