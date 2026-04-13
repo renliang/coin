@@ -1,0 +1,29 @@
+{% extends "base.html" %}
+{% block title %}扫描历史{% endblock %}
+{% block content %}
+<p class="summary">共追踪 <strong>{{ symbols|length }}</strong> 个币种</p>
+<div class="table-wrap">
+  <table>
+    <thead>
+      <tr>
+        <th>币种</th>
+        <th>出现次数</th>
+        <th>最新分数</th>
+        <th>最后扫描时间</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for row in symbols %}
+      <tr>
+        <td><a class="symbol-link" href="{{ url_for('coin_detail', symbol_slug=row.symbol) }}">{{ row.symbol }}</a></td>
+        <td>{{ row.times }}</td>
+        <td>{{ '%.4f'|format(row.last_score) if row.last_score is not none else '—' }}</td>
+        <td>{{ row.last_seen }}</td>
+      </tr>
+      {% else %}
+      <tr><td colspan="4" class="muted center">无数据</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endblock %}

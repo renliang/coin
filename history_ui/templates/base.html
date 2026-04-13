@@ -1,0 +1,21 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}扫描历史{% endblock %}</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+  <header class="site-header">
+    <a class="site-title" href="{{ url_for('index') }}">扫描历史</a>
+    <form class="site-search" action="{{ url_for('search') }}" method="get">
+      <input type="text" name="symbol" placeholder="BTC/USDT" autocomplete="off">
+      <button type="submit">Go</button>
+    </form>
+  </header>
+  <main class="site-main">
+    {% block content %}{% endblock %}
+  </main>
+</body>
+</html>

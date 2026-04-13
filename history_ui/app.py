@@ -1,8 +1,8 @@
 import os
 
-from flask import Flask, render_template, request
+from flask import Flask, redirect, render_template, request, url_for
 
-from scanner.tracker import query_scan_results
+from scanner.tracker import get_closed_trades, get_tracked_symbols, query_scan_results
 
 
 def create_app() -> Flask:
@@ -14,54 +14,27 @@ def create_app() -> Flask:
 
     @app.route("/")
     def index():
-        symbol = request.args.get("symbol", "").strip() or None
-        mode = request.args.get("mode", "").strip() or None
-        scan_time_from = request.args.get("scan_time_from", "").strip() or None
-        scan_time_to = request.args.get("scan_time_to", "").strip() or None
+        symbols = get_tracked_symbols()
+        return render_template("index.html", symbols=symbols)
 
-        try:
-            page = max(1, int(request.args.get("page", "1")))
-        except ValueError:
-            page = 1
-        try:
-            per_page = int(request.args.get("per_page", "50"))
-        except ValueError:
-            per_page = 50
+    @app.route("/search")
+    def search():
+        symbol = request.args.get("symbol", "").strip().upper().replace("-", "/")
+        if not symbol:
+            return redirect(url_for("index"))
+        return redirect(url_for("coin_detail", symbol_slug=symbol))
 
-        rows, total = query_scan_results(
-            symbol=symbol,
-            mode=mode,
-            scan_time_from=scan_time_from,
-            scan_time_to=scan_time_to,
-            page=page,
-            per_page=per_page,
-        )
-
-        per_page_eff = min(max(1, per_page), 200)
-        total_pages = max(1, (total + per_page_eff - 1) // per_page_eff) if total else 1
-        if page > total_pages:
-            page = total_pages
-            rows, total = query_scan_results(
-                symbol=symbol,
-                mode=mode,
-                scan_time_from=scan_time_from,
-                scan_time_to=scan_time_to,
-                page=page,
-                per_page=per_page,
-            )
-
+    @app.route("/coin/<path:symbol_slug>")
+    def coin_detail(symbol_slug: str):
+        symbol = symbol_slug.upper()
+        scans, _ = query_scan_results(symbol=symbol, per_page=500)
+        all_trades = get_closed_trades()
+        trades = [t for t in all_trades if t["symbol"] == symbol]
         return render_template(
-            "history.html",
-            rows=rows,
-            total=total,
-            page=page,
-            per_page=per_page,
-            total_pages=total_pages,
-            symbol=symbol or "",
-            mode=mode or "",
-            scan_time_from=scan_time_from or "",
-            scan_time_to=scan_time_to or "",
-            per_page_eff=per_page_eff,
+            "coin.html",
+            symbol=symbol,
+            scans=scans,
+            trades=trades,
         )
 
     return app
