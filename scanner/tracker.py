@@ -111,6 +111,70 @@ def get_history(symbol: str, limit: int = 10) -> list[dict]:
     return [dict(r) for r in rows]
 
 
+def query_scan_results(
+    symbol: str | None = None,
+    mode: str | None = None,
+    scan_time_from: str | None = None,
+    scan_time_to: str | None = None,
+    page: int = 1,
+    per_page: int = 50,
+    max_per_page: int = 200,
+) -> tuple[list[dict], int]:
+    """分页查询扫描历史（只读）。空字符串视为未设置筛选条件。"""
+    def _norm(s: str | None) -> str | None:
+        if s is None:
+            return None
+        t = s.strip()
+        return t if t else None
+
+    symbol = _norm(symbol)
+    mode = _norm(mode)
+    scan_time_from = _norm(scan_time_from)
+    scan_time_to = _norm(scan_time_to)
+
+    per_page = min(max(1, per_page), max_per_page)
+    page = max(1, page)
+    offset = (page - 1) * per_page
+
+    conditions: list[str] = []
+    params: list = []
+    if symbol is not None:
+        conditions.append("r.symbol = ?")
+        params.append(symbol)
+    if mode is not None:
+        conditions.append("r.mode = ?")
+        params.append(mode)
+    if scan_time_from is not None:
+        conditions.append("s.scan_time >= ?")
+        params.append(scan_time_from)
+    if scan_time_to is not None:
+        conditions.append("s.scan_time <= ?")
+        params.append(scan_time_to)
+
+    where_sql = (" WHERE " + " AND ".join(conditions)) if conditions else ""
+
+    conn = _get_conn()
+    count_row = conn.execute(
+        f"SELECT COUNT(*) FROM scan_results r JOIN scans s ON r.scan_id = s.id{where_sql}",
+        params,
+    ).fetchone()
+    total = int(count_row[0])
+
+    rows = conn.execute(
+        f"""
+        SELECT s.scan_time, r.symbol, r.price, r.market_cap_m, r.drop_pct,
+               r.volume_ratio, r.window_days, r.score, r.mode
+        FROM scan_results r JOIN scans s ON r.scan_id = s.id
+        {where_sql}
+        ORDER BY s.scan_time DESC
+        LIMIT ? OFFSET ?
+        """,
+        params + [per_page, offset],
+    ).fetchall()
+    conn.close()
+    return [dict(r) for r in rows], total
+
+
 def save_order(
     order_id: str,
     symbol: str,

@@ -5,7 +5,8 @@ import pandas as pd
 
 
 _exchange = None
-_okx = None
+_usdm = None
+_authed_usdm = None
 
 
 def _get_exchange(proxy: str = "") -> ccxt.binance:
@@ -13,56 +14,80 @@ def _get_exchange(proxy: str = "") -> ccxt.binance:
     if _exchange is None:
         config = {"enableRateLimit": True, "timeout": 30000}
         if proxy:
-            config["proxies"] = {"https": proxy, "http": proxy}
+            config["httpsProxy"] = proxy
         _exchange = ccxt.binance(config)
     return _exchange
 
 
-def _get_okx(proxy: str = "") -> ccxt.okx:
-    global _okx
-    if _okx is None:
+def _get_binance_usdm(proxy: str = "") -> ccxt.binanceusdm:
+    global _usdm
+    if _usdm is None:
         config = {"enableRateLimit": True, "timeout": 30000}
         if proxy:
-            config["proxies"] = {"https": proxy, "http": proxy}
-        _okx = ccxt.okx(config)
-    return _okx
+            config["httpsProxy"] = proxy
+        _usdm = ccxt.binanceusdm(config)
+    return _usdm
+
+
+def get_authed_usdm(api_key: str, api_secret: str, proxy: str = "") -> ccxt.binanceusdm:
+    """创建带 API Key 认证的币安 USDM 永续合约实例，用于下单。"""
+    global _authed_usdm
+    if _authed_usdm is None:
+        config = {
+            "apiKey": api_key,
+            "secret": api_secret,
+            "enableRateLimit": True,
+            "timeout": 30000,
+            "options": {"defaultType": "swap"},
+        }
+        if proxy:
+            config["httpsProxy"] = proxy
+        _authed_usdm = ccxt.binanceusdm(config)
+    return _authed_usdm
 
 
 def set_proxy(proxy: str):
-    global _exchange, _okx
+    global _exchange, _usdm, _authed_usdm
     _exchange = None
-    _okx = None
+    _usdm = None
+    _authed_usdm = None
     _get_exchange(proxy)
-    _get_okx(proxy)
+    _get_binance_usdm(proxy)
 
 
 def fetch_futures_symbols() -> list[str]:
-    """获取OKX支持USDT永续合约、且Binance有现货的交易对列表"""
-    okx = _get_okx()
-    okx.load_markets()
-    # OKX 合约符号
-    okx_bases = set()
-    for symbol, market in okx.markets.items():
-        if market.get("swap") and market.get("active") and market.get("quote") == "USDT":
-            okx_bases.add(market.get("base", ""))
+    """获取 Binance U 本位 USDT 永续的 base，且存在 Binance 现货 BASE/USDT 的交易对列表。
 
-    # Binance 现货确认（K线从Binance拉）
+    K 线/现货行情仍走 Binance 现货（与蓄力/背离/回测一致）。
+    """
+    usdm = _get_binance_usdm()
+    usdm.load_markets()
+    bases: set[str] = set()
+    for market in usdm.markets.values():
+        if market.get("swap") and market.get("active") and market.get("quote") == "USDT":
+            b = market.get("base") or ""
+            if b:
+                bases.add(b)
+
     exchange = _get_exchange()
     exchange.load_markets()
     result = []
-    for base in sorted(okx_bases):
+    for base in sorted(bases):
         spot = f"{base}/USDT"
         if spot in exchange.markets:
             result.append(spot)
     return result
 
 
-def fetch_klines(symbol: str, days: int = 30) -> pd.DataFrame | None:
-    """从Binance拉取日K线数据。"""
-    exchange = _get_exchange()
+def fetch_klines(symbol: str, days: int = 30, use_futures: bool = True) -> pd.DataFrame | None:
+    """从Binance拉取日K线数据。默认用合约K线（与交易标的一致）。"""
+    exchange = _get_binance_usdm() if use_futures else _get_exchange()
+    fetch_symbol = symbol
+    if use_futures and not symbol.endswith(":USDT"):
+        fetch_symbol = f"{symbol}:USDT"
     try:
         since = exchange.milliseconds() - days * 24 * 60 * 60 * 1000
-        ohlcv = exchange.fetch_ohlcv(symbol, timeframe="1d", since=since, limit=days)
+        ohlcv = exchange.fetch_ohlcv(fetch_symbol, timeframe="1d", since=since, limit=days)
     except (ccxt.BadSymbol, ccxt.ExchangeError):
         return None
     except (ccxt.NetworkError, ccxt.RequestTimeout):

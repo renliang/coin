@@ -26,7 +26,7 @@ scanner/backtest.py (滑动窗口检测 + 收益计算 + 统计)
 
 ### 1. 数据获取
 
-复用 `fetch_klines_batch(symbols, days=180)`，从 Binance 拉取每个币种 180 天日线。币种来源与当前扫描一致（OKX 合约 ∩ Binance 现货），也支持 `--symbols` 手动指定。
+复用 `fetch_klines_batch(symbols, days=180)`，从 Binance 拉取每个币种 180 天日线。币种来源与当前扫描一致（Binance U 本位永续 base ∩ Binance 现货），也支持 `--symbols` 手动指定。
 
 ### 2. 滑动窗口回扫
 

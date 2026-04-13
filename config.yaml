@@ -2,7 +2,7 @@ proxy:
   https: "http://127.0.0.1:7897"
 
 scanner:
-  max_market_cap: 100000000    # 市值上限（美元），默认1亿
+  max_market_cap: 1000000000   # 市值上限（美元），默认10亿
   window_min_days: 7           # 检测窗口最小天数
   window_max_days: 14          # 检测窗口最大天数
   volume_ratio: 0.5            # 缩量阈值（后期量/前期量）
@@ -18,8 +18,11 @@ scanner:
 signal:
   min_score: 0.6               # 最低评分门槛（回测验证：高分组3d胜率69%）
   hold_days: 3                 # 建议持仓天数（回测验证：3d最优）
-  stop_loss: 0.05              # 止损比例 5%
-  take_profit: 0.08            # 止盈比例 8%
+  stop_loss: 0.05              # 止损比例 5%（ATR不可用时的回退值）
+  take_profit: 0.08            # 止盈比例 8%（ATR不可用时的回退值）
+  atr_period: 14               # ATR 计算周期（日K根数）
+  atr_sl_multiplier: 2.0       # 止损 = 入场价 ∓ ATR × 此倍数
+  atr_tp_multiplier: 3.0       # 止盈 = 入场价 ± ATR × 此倍数（盈亏比1.5:1）
   confirmation: true              # 是否启用确认层
   confirmation_min_pass: 4        # 6项中至少通过几项
 
@@ -53,6 +56,31 @@ listing_intel:
   manual_overlay_csv: null      # 例如 overlays/listing_notes.csv
   trust_tier_high_min: 75
   trust_tier_mid_min: 55
+
+# 自动交易（--serve 模式启用）
+trading:
+  enabled: true                       # 总开关，true 时扫描后自动下单
+  api_key_env: BINANCE_API_KEY        # 环境变量名
+  api_secret_env: BINANCE_API_SECRET
+  max_positions: 5                    # 最大同时持仓数
+  order_timeout_minutes: 30           # 限价单超时转市价
+  safety_factor: 1.5                  # 爆仓距离 = 止损距离 × 此值（越大越保守）
+  max_leverage: 20                    # 全局杠杆硬上限
+  score_leverage:                     # 评分 → 杠杆系数（止损反推的安全杠杆 × 此系数）
+    0.6: 0.4
+    0.7: 0.6
+    0.8: 0.8
+    0.9: 1.0
+  score_sizing:                       # 评分 → 仓位百分比（占可用余额）
+    0.6: 0.02
+    0.7: 0.03
+    0.8: 0.04
+    0.9: 0.05
+
+# 定时调度（--serve 模式）
+schedule:
+  scan_time: "08:10"                  # 每日扫描时间 (HH:MM)，日K在08:00(UTC+8)收盘，留10分钟等数据落库
+  monitor_interval: 60                # 订单监控间隔(秒)
 
 # 天量回踩二攻模式（--mode breakout）
 breakout:

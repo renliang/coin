@@ -61,24 +61,25 @@ class TestDetectDivergence:
     def _make_bullish_divergence_data(self) -> pd.DataFrame:
         """构造底背离数据：价格创新低，但DIF未创新低。
 
-        第一个波谷在 ~index 30，第二个在 ~index 55。
-        价格在第二个波谷更低，但由于整体跌幅放缓，DIF第二次更高。
+        波谷1在~index 40，波谷2在~index 80。pivot_len=7需要前后各7根。
+        warmup=26，波谷1相对索引=14，满足≥7。
+        两个波谷间距40，价格差>5%。
         """
-        n = 70
+        n = 100
         closes = []
         for i in range(n):
-            if i < 30:
-                # 急跌到波谷1
+            if i < 40:
+                # 急跌到波谷1 (100→40)
                 closes.append(100 - i * 1.5)
-            elif i < 40:
-                # 反弹
-                closes.append(55 + (i - 30) * 2.0)
-            elif i < 55:
-                # 缓跌到波谷2（价格更低，但跌速更慢 → DIF更高）
-                closes.append(75 - (i - 40) * 1.8)
+            elif i < 60:
+                # 充分反弹
+                closes.append(40 + (i - 40) * 1.5)
+            elif i < 80:
+                # 缓跌到波谷2 (价格更低到35，但跌速更慢 → DIF更高)
+                closes.append(70 - (i - 60) * 1.75)
             else:
-                # 小幅回升
-                closes.append(48 + (i - 55) * 0.5)
+                # 充分回升
+                closes.append(35 + (i - 80) * 1.5)
         return _make_klines(closes, n)
 
     def test_bullish_divergence_detected(self):
@@ -89,21 +90,21 @@ class TestDetectDivergence:
 
     def _make_bearish_divergence_data(self) -> pd.DataFrame:
         """构造顶背离数据：价格创新高，但DIF未创新高。"""
-        n = 70
+        n = 100
         closes = []
         for i in range(n):
-            if i < 30:
-                # 急涨到波峰1
+            if i < 40:
+                # 急涨到波峰1 (50→110)
                 closes.append(50 + i * 1.5)
-            elif i < 40:
-                # 回落
-                closes.append(95 - (i - 30) * 2.0)
-            elif i < 55:
-                # 缓涨到波峰2（价格更高，但涨速更慢 → DIF更低）
-                closes.append(75 + (i - 40) * 1.8)
+            elif i < 60:
+                # 充分回落
+                closes.append(110 - (i - 40) * 1.5)
+            elif i < 80:
+                # 缓涨到波峰2 (价格更高到118，涨速慢 → DIF更低)
+                closes.append(80 + (i - 60) * 1.9)
             else:
-                # 小幅回落
-                closes.append(102 - (i - 55) * 0.5)
+                # 充分回落
+                closes.append(118 - (i - 80) * 1.5)
         return _make_klines(closes, n)
 
     def test_bearish_divergence_detected(self):

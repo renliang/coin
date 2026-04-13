@@ -1,4 +1,6 @@
-from scanner.signal import SignalConfig, TradeSignal, generate_signals
+import pandas as pd
+
+from scanner.signal import SignalConfig, TradeSignal, generate_signals, calculate_atr
 
 
 def test_filter_by_min_score():
@@ -14,8 +16,8 @@ def test_filter_by_min_score():
     assert signals[1].symbol == "C/USDT"
 
 
-def test_trade_params_calculation():
-    """止损价 = price * 0.95，止盈价 = price * 1.08。"""
+def test_trade_params_fixed_fallback():
+    """无ATR时回退到固定百分比: score=0.70 → 2.5%回撤, SL=entry*0.95, TP=entry*1.08。"""
     matches = [
         {"symbol": "X/USDT", "price": 100.0, "score": 0.70, "drop_pct": 0.10, "volume_ratio": 0.3, "window_days": 14},
     ]
@@ -24,10 +26,47 @@ def test_trade_params_calculation():
 
     assert len(signals) == 1
     s = signals[0]
-    assert s.entry_price == 100.0
-    assert abs(s.stop_loss_price - 95.0) < 0.01
-    assert abs(s.take_profit_price - 108.0) < 0.01
+    assert s.price == 100.0
+    assert abs(s.entry_price - 97.5) < 0.01
+    assert abs(s.stop_loss_price - 92.625) < 0.01
+    assert abs(s.take_profit_price - 105.3) < 0.01
     assert s.hold_days == 3
+
+
+def test_trade_params_with_atr():
+    """有ATR时: entry=97.5, SL=entry-2*ATR=97.5-2*2=93.5, TP=entry+3*ATR=97.5+3*2=103.5。"""
+    matches = [
+        {"symbol": "X/USDT", "price": 100.0, "score": 0.70, "drop_pct": 0.10,
+         "volume_ratio": 0.3, "window_days": 14, "atr": 2.0},
+    ]
+    config = SignalConfig(min_score=0.6, atr_sl_multiplier=2.0, atr_tp_multiplier=3.0, hold_days=3)
+    signals = generate_signals(matches, config)
+
+    assert len(signals) == 1
+    s = signals[0]
+    assert abs(s.entry_price - 97.5) < 0.01
+    assert abs(s.stop_loss_price - 93.5) < 0.01   # 97.5 - 2*2.0
+    assert abs(s.take_profit_price - 103.5) < 0.01  # 97.5 + 3*2.0
+
+
+def test_bearish_signal_with_atr():
+    """顶背离+ATR: entry=102.5, SL=entry+2*ATR=106.5, TP=entry-3*ATR=96.5。"""
+    matches = [
+        {
+            "symbol": "X/USDT", "price": 100.0, "score": 0.70, "atr": 2.0,
+            "drop_pct": 0.0, "volume_ratio": 0.0, "window_days": 0,
+            "signal_type": "顶背离", "mode": "divergence",
+        },
+    ]
+    config = SignalConfig(min_score=0.6, atr_sl_multiplier=2.0, atr_tp_multiplier=3.0, hold_days=3)
+    signals = generate_signals(matches, config)
+
+    assert len(signals) == 1
+    s = signals[0]
+    assert s.signal_type == "顶背离"
+    assert abs(s.entry_price - 102.5) < 0.01
+    assert abs(s.stop_loss_price - 106.5) < 0.01   # 102.5 + 2*2.0
+    assert abs(s.take_profit_price - 96.5) < 0.01   # 102.5 - 3*2.0
 
 
 def test_all_filtered_out():
@@ -46,7 +85,7 @@ def test_empty_input():
 
 
 def test_bearish_signal_reverses_sl_tp():
-    """顶背离信号: 止损在上方, 止盈在下方。"""
+    """顶背离信号(无ATR): score=0.70, SL/TP用固定百分比。"""
     matches = [
         {
             "symbol": "X/USDT", "price": 100.0, "score": 0.70,
@@ -60,12 +99,13 @@ def test_bearish_signal_reverses_sl_tp():
     assert len(signals) == 1
     s = signals[0]
     assert s.signal_type == "顶背离"
-    assert abs(s.stop_loss_price - 105.0) < 0.01   # 上方止损
-    assert abs(s.take_profit_price - 92.0) < 0.01   # 下方止盈
+    assert abs(s.entry_price - 102.5) < 0.01
+    assert abs(s.stop_loss_price - 107.625) < 0.01
+    assert abs(s.take_profit_price - 94.3) < 0.01
 
 
 def test_bullish_signal_default_direction():
-    """底背离信号: 与原有做多方向一致。"""
+    """底背离信号(无ATR): score=0.70, SL/TP用固定百分比。"""
     matches = [
         {
             "symbol": "Y/USDT", "price": 100.0, "score": 0.70,
@@ -79,8 +119,9 @@ def test_bullish_signal_default_direction():
     assert len(signals) == 1
     s = signals[0]
     assert s.signal_type == "底背离"
-    assert abs(s.stop_loss_price - 95.0) < 0.01
-    assert abs(s.take_profit_price - 108.0) < 0.01
+    assert abs(s.entry_price - 97.5) < 0.01
+    assert abs(s.stop_loss_price - 92.625) < 0.01
+    assert abs(s.take_profit_price - 105.3) < 0.01
 
 
 def test_legacy_match_no_signal_type():
@@ -92,3 +133,18 @@ def test_legacy_match_no_signal_type():
     signals = generate_signals(matches, SignalConfig(min_score=0.6))
     assert len(signals) == 1
     assert signals[0].signal_type == ""
+
+
+def test_calculate_atr():
+    """ATR 计算: 简单场景下 ATR = 平均 True Range。"""
+    data = {
+        "open": [10.0] * 20,
+        "high": [12.0] * 20,
+        "low": [9.0] * 20,
+        "close": [11.0] * 20,
+        "volume": [1000] * 20,
+    }
+    df = pd.DataFrame(data)
+    atr = calculate_atr(df, period=14)
+    # high-low=3, prev_close=11, |high-prev|=1, |low-prev|=2 → TR=3 for all rows
+    assert abs(atr - 3.0) < 0.01

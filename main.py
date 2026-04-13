@@ -1,6 +1,11 @@
 import argparse
 import json
 import os
+
+from dotenv import load_dotenv
+
+load_dotenv()
+
 from dataclasses import dataclass, replace
 from datetime import datetime
 
@@ -35,10 +40,15 @@ class TradingConfig:
     max_positions: int = 5
     order_timeout_minutes: int = 30
     score_sizing: dict[float, float] | None = None
+    safety_factor: float = 1.5
+    max_leverage: int = 20
+    score_leverage: dict[float, float] | None = None
 
     def __post_init__(self):
         if self.score_sizing is None:
             self.score_sizing = {0.6: 0.02, 0.7: 0.03, 0.8: 0.04, 0.9: 0.05}
+        if self.score_leverage is None:
+            self.score_leverage = {0.6: 0.4, 0.7: 0.6, 0.8: 0.8, 0.9: 1.0}
 
     def get_api_key(self) -> str:
         return os.environ.get(self.api_key_env, "")
@@ -88,6 +98,8 @@ def load_config(
     t = raw.get("trading", {})
     score_sizing_raw = t.get("score_sizing")
     score_sizing = {float(k): float(v) for k, v in score_sizing_raw.items()} if score_sizing_raw else None
+    score_leverage_raw = t.get("score_leverage")
+    score_leverage = {float(k): float(v) for k, v in score_leverage_raw.items()} if score_leverage_raw else None
     trading_config = TradingConfig(
         enabled=t.get("enabled", False),
         api_key_env=t.get("api_key_env", "BINANCE_API_KEY"),
@@ -95,6 +107,9 @@ def load_config(
         max_positions=t.get("max_positions", 5),
         order_timeout_minutes=t.get("order_timeout_minutes", 30),
         score_sizing=score_sizing,
+        safety_factor=float(t.get("safety_factor", 1.5)),
+        max_leverage=int(t.get("max_leverage", 20)),
+        score_leverage=score_leverage,
     )
 
     # schedule config
@@ -857,7 +872,7 @@ def execute_trading_pipeline(
     """交易管线：仓位过滤 → 计算仓位 → 下单执行。"""
     import logging
     from scanner.kline import get_authed_usdm
-    from scanner.trader.sizing import get_max_leverage, calculate_position
+    from scanner.trader.sizing import get_max_leverage, calculate_leverage, calculate_position
     from scanner.trader.position import filter_signals
     from scanner.trader.executor import execute_trade
 
@@ -904,7 +919,20 @@ def execute_trading_pipeline(
     # 逐个下单
     success_count = 0
     for signal in filtered:
-        leverage = get_max_leverage(exchange, signal.symbol)
+        stop_distance = abs(signal.entry_price - signal.stop_loss_price) / signal.entry_price
+        exchange_max = get_max_leverage(exchange, signal.symbol)
+        leverage = calculate_leverage(
+            stop_distance=stop_distance,
+            score=signal.score,
+            safety_factor=trading_config.safety_factor,
+            max_leverage=trading_config.max_leverage,
+            exchange_max=exchange_max,
+            score_leverage=trading_config.score_leverage,
+        )
+        if leverage < 1:
+            logger.warning("[%s] 止损距离 %.1f%% 过大，安全杠杆<1，跳过", signal.symbol, stop_distance * 100)
+            print(f"[交易] {signal.symbol} 止损距离 {stop_distance:.1%} 过大，跳过")
+            continue
         amount = calculate_position(
             balance=available,
             price=signal.entry_price,
@@ -916,10 +944,13 @@ def execute_trading_pipeline(
             logger.warning("[%s] 计算仓位为 0，跳过", signal.symbol)
             continue
 
+        logger.info("[%s] 止损距离=%.1f%%, 杠杆=%dx (安全上限=%dx, 交易所=%dx)",
+                    signal.symbol, stop_distance * 100, leverage,
+                    min(int(1 / (stop_distance * trading_config.safety_factor)), trading_config.max_leverage),
+                    exchange_max)
         ok = execute_trade(exchange, signal, amount, leverage)
         if ok:
             success_count += 1
-            # 扣减可用余额估算（实际由交易所管理）
             margin_used = (amount * signal.entry_price) / leverage
             available -= margin_used
 
