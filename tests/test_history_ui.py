@@ -31,6 +31,25 @@ def temp_db(monkeypatch, tmp_path: Path) -> Path:
             mode TEXT NOT NULL DEFAULT 'accumulation',
             FOREIGN KEY (scan_id) REFERENCES scans(id)
         );
+        CREATE TABLE positions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            symbol TEXT NOT NULL,
+            side TEXT NOT NULL,
+            entry_price REAL NOT NULL,
+            size REAL NOT NULL,
+            leverage INTEGER NOT NULL,
+            score REAL NOT NULL,
+            tp_order_id TEXT,
+            sl_order_id TEXT,
+            status TEXT NOT NULL DEFAULT 'open',
+            opened_at TEXT NOT NULL,
+            closed_at TEXT,
+            exit_price REAL,
+            pnl REAL,
+            pnl_pct REAL,
+            exit_reason TEXT,
+            mode TEXT DEFAULT ''
+        );
         """
     )
     conn.execute(
@@ -105,11 +124,15 @@ def test_history_filter_symbol(temp_db, monkeypatch):
     assert r.data.count(b"ETH/USDT") >= 1
 
 
-def test_history_page2(temp_db, monkeypatch):
+def test_history_index_shows_all_symbols(temp_db, monkeypatch):
     monkeypatch.setattr(tracker, "DB_PATH", str(temp_db))
     app = create_app()
     app.config["TESTING"] = True
     client = app.test_client()
-    r = client.get("/?per_page=1&page=2")
+    r = client.get("/")
     assert r.status_code == 200
-    assert "第 2 / 3 页".encode("utf-8") in r.data
+    # 首页显示所有追踪币种
+    assert "BTC/USDT".encode("utf-8") in r.data
+    assert "ETH/USDT".encode("utf-8") in r.data
+    # 显示出现次数
+    assert "2".encode("utf-8") in r.data  # BTC/USDT 出现 2 次
