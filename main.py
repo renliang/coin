@@ -82,6 +82,7 @@ def load_config(
         atr_tp_multiplier=sig.get("atr_tp_multiplier", 3.0),
         confirmation=sig.get("confirmation", True),
         confirmation_min_pass=sig.get("confirmation_min_pass", 3),
+        max_stop_loss=sig.get("max_stop_loss", 0.05),
     )
     scanner_cfg = dict(raw.get("scanner", {}))
     if "breakout" in raw:

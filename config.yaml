@@ -23,6 +23,7 @@ signal:
   atr_period: 14               # ATR 计算周期（日K根数）
   atr_sl_multiplier: 2.0       # 止损 = 入场价 ∓ ATR × 此倍数
   atr_tp_multiplier: 3.0       # 止盈 = 入场价 ± ATR × 此倍数（盈亏比1.5:1）
+  max_stop_loss: 0.05          # ATR 止损距离上限（相对入场价比例）
   confirmation: true              # 是否启用确认层
   confirmation_min_pass: 4        # 6项中至少通过几项
 
