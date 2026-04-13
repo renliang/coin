@@ -48,6 +48,7 @@ class TradeSignal:
     signal_type: str = ""
     mode: str = ""
     sl_capped: bool = False
+    market_cap_m: float = 0.0
 
 
 def _entry_discount(score: float) -> float:
@@ -121,5 +122,6 @@ def generate_signals(
             signal_type=signal_type,
             mode=m.get("mode", ""),
             sl_capped=sl_capped,
+            market_cap_m=m.get("market_cap_m", 0.0),
         ))
     return signals

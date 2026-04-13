@@ -202,3 +202,27 @@ def test_bearish_sl_capped():
     s = signals[0]
     assert s.sl_capped is True
     assert abs(s.stop_loss_price - 107.625) < 0.01   # 102.5 * 1.05
+
+
+def test_market_cap_m_copied_from_match():
+    """generate_signals 应将 match 里的 market_cap_m 复制到 TradeSignal。"""
+    matches = [
+        {"symbol": "X/USDT", "price": 100.0, "score": 0.70, "atr": 2.0,
+         "drop_pct": 0.10, "volume_ratio": 0.3, "window_days": 14,
+         "market_cap_m": 999.5},
+    ]
+    config = SignalConfig(min_score=0.6, atr_sl_multiplier=2.0, atr_tp_multiplier=3.0)
+    signals = generate_signals(matches, config)
+    assert len(signals) == 1
+    assert signals[0].market_cap_m == 999.5
+
+
+def test_market_cap_m_defaults_to_zero():
+    """match 没有 market_cap_m 时，TradeSignal.market_cap_m 默认为 0。"""
+    matches = [
+        {"symbol": "X/USDT", "price": 100.0, "score": 0.70, "atr": 2.0,
+         "drop_pct": 0.10, "volume_ratio": 0.3, "window_days": 14},
+    ]
+    config = SignalConfig(min_score=0.6, atr_sl_multiplier=2.0, atr_tp_multiplier=3.0)
+    signals = generate_signals(matches, config)
+    assert signals[0].market_cap_m == 0.0
