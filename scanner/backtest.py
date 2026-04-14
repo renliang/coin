@@ -21,6 +21,8 @@ class BacktestHit:
     volume_ratio: float
     score: float
     returns: dict[str, float | None] = field(default_factory=dict)
+    r_squared: float = 0.0
+    max_daily_pct: float = 0.0
 
 
 def run_backtest(
@@ -95,6 +97,8 @@ def run_backtest(
                 volume_ratio=result.volume_ratio,
                 score=score,
                 returns=returns,
+                r_squared=result.r_squared,
+                max_daily_pct=result.max_daily_pct,
             ))
 
     return all_hits
