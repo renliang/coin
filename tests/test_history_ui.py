@@ -118,7 +118,7 @@ def test_history_index_200(temp_db, monkeypatch):
     client = app.test_client()
     r = client.get("/")
     assert r.status_code == 200
-    assert "扫描历史".encode("utf-8") in r.data
+    assert "今日扫描".encode("utf-8") in r.data
 
 
 def test_history_filter_symbol(temp_db, monkeypatch):
@@ -142,7 +142,7 @@ def test_history_index_shows_all_symbols(temp_db, monkeypatch):
     # 首页显示今天各模式的扫描结果（test data 中 BTC/USDT 和 ETH/USDT 都在 2026-01-10，
     # 但这不是 "今天"，所以应该显示空）
     # 验证返回状态码正常，页面有指定结构即可
-    assert "扫描历史".encode("utf-8") in r.data
+    assert "今日扫描".encode("utf-8") in r.data
 
 
 def test_coin_detail_200(temp_db, monkeypatch):

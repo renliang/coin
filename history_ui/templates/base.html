@@ -8,7 +8,8 @@
 </head>
 <body>
   <header class="site-header">
-    <a class="site-title" href="{{ url_for('index') }}">扫描历史</a>
+    <a class="site-title" href="{{ url_for('index') }}">今日扫描</a>
+    <a class="site-nav-link" href="{{ url_for('history') }}">全部历史</a>
     <form class="site-search" action="{{ url_for('search') }}" method="get">
       <input type="text" name="symbol" placeholder="BTC/USDT" autocomplete="off">
       <button type="submit">Go</button>
