@@ -971,6 +971,145 @@ def run_stats(json_only: bool = False) -> None:
     print(f"\n[导出] {path}")
 
 
+def run_optimize_cli(
+    config: dict,
+    signal_config: SignalConfig,
+    days: int = 180,
+    symbols_override: list[str] | None = None,
+) -> None:
+    """运行 Optuna 参数优化，基于回测数据搜索最优参数后写入 config.yaml。"""
+    from scanner.backtest import run_backtest, compute_stats, format_stats
+    from scanner.optimize.param_optimizer import optimize_params
+
+    # 1. 获取交易对 + K线
+    if symbols_override:
+        symbols = symbols_override
+        print(f"[optimize] 使用指定的 {len(symbols)} 个交易对")
+    else:
+        print("[optimize] 获取交易对列表...")
+        symbols = fetch_futures_symbols()
+        print(f"[optimize] 共 {len(symbols)} 个合约交易对")
+
+    if not symbols:
+        print("[optimize] 没有找到交易对，退出。")
+        return
+
+    print(f"[optimize] 拉取 {days} 天K线数据...")
+    klines = fetch_klines_batch(symbols, days=days, delay=0.5)
+    print(f"[optimize] 成功获取 {len(klines)} 个交易对的K线")
+
+    # 2. 回测
+    print("[optimize] 运行回测（滑动窗口）...")
+    hits = run_backtest(klines, config)
+    print(f"[optimize] 总命中 {len(hits)} 次形态")
+
+    if not hits:
+        print("[optimize] 历史数据中未检测到底部蓄力形态，无法优化。")
+        return
+
+    stats = compute_stats(hits)
+    print(f"\n[optimize] 基准回测统计:\n{format_stats(stats)}")
+
+    # 3. Optuna 参数搜索
+    print("\n[optimize] 开始 Optuna 参数搜索（n_trials=200）...")
+    result = optimize_params(hits, n_trials=200)
+    print("\n[optimize] ===== 最优参数 =====")
+    print(f"  drop_min:           {result.drop_min:.4f}")
+    print(f"  drop_max:           {result.drop_max:.4f}")
+    print(f"  max_daily_change:   {result.max_daily_change:.4f}")
+    print(f"  min_score:          {result.min_score:.4f}")
+    print(f"  w_volume:           {result.w_volume:.4f}")
+    print(f"  w_drop:             {result.w_drop:.4f}")
+    print(f"  w_trend:            {result.w_trend:.4f}")
+    print(f"  w_slow:             {result.w_slow:.4f}")
+    print(f"  validation_win_rate:    {result.validation_win_rate:.4f}")
+    print(f"  validation_mean_return: {result.validation_mean_return:.4f}")
+    print(f"  objective_value:        {result.objective_value:.4f}")
+
+    # 4. 写入 config.yaml 的 optimized 段
+    cfg_path = "config.yaml"
+    try:
+        with open(cfg_path) as f:
+            raw = yaml.safe_load(f) or {}
+        raw["optimized"] = {
+            "drop_min": round(result.drop_min, 4),
+            "drop_max": round(result.drop_max, 4),
+            "max_daily_change": round(result.max_daily_change, 4),
+            "min_score": round(result.min_score, 4),
+            "w_volume": round(result.w_volume, 4),
+            "w_drop": round(result.w_drop, 4),
+            "w_trend": round(result.w_trend, 4),
+            "w_slow": round(result.w_slow, 4),
+            "validation_win_rate": round(result.validation_win_rate, 4),
+            "validation_mean_return": round(result.validation_mean_return, 4),
+            "objective_value": round(result.objective_value, 4),
+        }
+        with open(cfg_path, "w") as f:
+            yaml.dump(raw, f, allow_unicode=True, default_flow_style=False)
+        print(f"\n[optimize] 最优参数已写入 {cfg_path} 的 optimized 段")
+    except Exception as e:
+        print(f"[optimize] 写入 config.yaml 失败: {e}")
+
+
+def run_retrain_cli() -> None:
+    """收集信号反馈并重训练 ML 模型。"""
+    from scanner.optimize.feedback import ensure_outcomes_table
+    from scanner.optimize.retrain import run_retrain
+
+    print("[retrain] 确保 signal_outcomes 表存在...")
+    ensure_outcomes_table()
+    print("[retrain] 开始重训练...")
+    report = run_retrain()
+
+    print("\n[retrain] ===== 重训练报告 =====")
+    print(f"  时间:         {report.timestamp}")
+    print(f"  样本数:       {report.samples_used}")
+    print(f"  新模型准确率: {report.new_accuracy:.4f}")
+    if report.old_accuracy is not None:
+        print(f"  旧模型准确率: {report.old_accuracy:.4f}")
+    else:
+        print(f"  旧模型准确率: (无旧模型)")
+    print(f"  是否提升:     {'是' if report.improved else '否'}")
+    if report.model_path:
+        print(f"  模型路径:     {report.model_path}")
+    if report.report_path:
+        print(f"  报告路径:     {report.report_path}")
+    if report.samples_used < 100:
+        print(f"\n[retrain] 样本数不足（{report.samples_used}/100），尚未训练模型。")
+        print("[retrain] 请先运行扫描积累信号，待 return_7d 回填后再重训练。")
+
+
+def run_optimize_report_cli() -> None:
+    """查看当前最优参数和模型表现。"""
+    from scanner.optimize.ml_filter import load_latest_model
+
+    cfg_path = "config.yaml"
+    optimized = None
+    try:
+        with open(cfg_path) as f:
+            raw = yaml.safe_load(f) or {}
+        optimized = raw.get("optimized")
+    except Exception as e:
+        print(f"[report] 读取 {cfg_path} 失败: {e}")
+
+    print("\n[report] ===== 优化参数 =====")
+    if optimized:
+        for k, v in optimized.items():
+            print(f"  {k}: {v}")
+    else:
+        print("  尚未运行过 --optimize，config.yaml 中没有 optimized 段。")
+
+    print("\n[report] ===== ML 模型状态 =====")
+    model_info = load_latest_model()
+    if model_info is None:
+        print("  尚未运行过 --retrain，models 目录中没有训练好的模型。")
+    else:
+        print(f"  训练时间:   {model_info.trained_at}")
+        print(f"  样本数:     {model_info.sample_count}")
+        print(f"  验证准确率: {model_info.validation_accuracy:.4f}")
+        print(f"  特征数量:   {len(model_info.feature_names)}")
+
+
 def main():
     parser = argparse.ArgumentParser(description="币种形态筛选器")
     parser.add_argument(
@@ -1016,12 +1155,37 @@ def main():
         action="store_true",
         help="与 --stats 联用：仅导出 JSON，不打印表格",
     )
+    parser.add_argument(
+        "--optimize",
+        action="store_true",
+        help="运行 Optuna 参数优化（需先有回测数据）",
+    )
+    parser.add_argument(
+        "--retrain",
+        action="store_true",
+        help="收集信号反馈 + 重训练 ML 模型",
+    )
+    parser.add_argument(
+        "--optimize-report",
+        action="store_true",
+        help="查看当前最优参数和模型表现",
+    )
     args = parser.parse_args()
 
     config, signal_config, trading_config, schedule_config = load_config(args.config)
 
     if args.no_confirm:
         signal_config = replace(signal_config, confirmation=False)
+
+    if args.optimize:
+        run_optimize_cli(config, signal_config, days=args.days, symbols_override=args.symbols)
+        return
+    if args.retrain:
+        run_retrain_cli()
+        return
+    if args.optimize_report:
+        run_optimize_report_cli()
+        return
 
     if args.serve:
         run_serve(config, signal_config, trading_config, schedule_config)
