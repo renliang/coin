@@ -3,6 +3,8 @@ from dataclasses import dataclass
 
 import pandas as pd
 
+from scanner.levels import nearest_support, nearest_resistance
+
 
 @dataclass
 class SignalConfig:
@@ -49,6 +51,7 @@ class TradeSignal:
     mode: str = ""
     sl_capped: bool = False
     market_cap_m: float = 0.0
+    entry_method: str = ""  # "support_resistance" | "score_discount"
 
 
 def _entry_discount(score: float) -> float:
@@ -62,11 +65,51 @@ def _entry_discount(score: float) -> float:
     return 0.03
 
 
+def _try_sr_entry(
+    df: pd.DataFrame,
+    price: float,
+    is_bearish: bool,
+    atr: float,
+    use_atr: bool,
+    config: SignalConfig,
+) -> tuple[float, float, float, bool] | None:
+    """尝试支撑/阻力路径。返回 (entry, sl_price, tp_price, sl_capped) 或 None（降级）。"""
+    if is_bearish:
+        resistance = nearest_resistance(df, price, max_dist=config.max_stop_loss)
+        support = nearest_support(df, price) if resistance is not None else None
+        if resistance is None or support is None or resistance <= support:
+            return None
+        entry = resistance * 0.995
+        sl_raw = resistance + (atr if use_atr else resistance * config.stop_loss)
+        tp_price = support * 1.005
+    else:
+        support = nearest_support(df, price, max_dist=config.max_stop_loss)
+        resistance = nearest_resistance(df, price) if support is not None else None
+        if support is None or resistance is None or resistance <= support:
+            return None
+        entry = support * 1.005
+        sl_raw = support - (atr if use_atr else support * config.stop_loss)
+        tp_price = resistance * 0.995
+
+    sl_capped = False
+    sl_dist = abs(sl_raw - entry) / entry
+    if sl_dist > config.max_stop_loss:
+        sl_price = entry * (1 + config.max_stop_loss) if is_bearish else entry * (1 - config.max_stop_loss)
+        sl_capped = True
+    else:
+        sl_price = sl_raw
+
+    return entry, sl_price, tp_price, sl_capped
+
+
 def generate_signals(
     matches: list[dict],
     signal_config: SignalConfig,
+    klines_map: dict[str, pd.DataFrame] | None = None,
 ) -> list[TradeSignal]:
-    """过滤低分结果，为通过的结果生成交易建议。"""
+    """过滤低分结果，为通过的结果生成交易建议。
+    klines_map：symbol -> df，传入时优先走支撑/阻力路径。
+    """
     signals = []
     for m in matches:
         if m["score"] < signal_config.min_score:
@@ -79,6 +122,33 @@ def generate_signals(
         atr = m.get("atr", 0)
         use_atr = atr > 0 and not math.isnan(atr)
 
+        # 支撑/阻力路径（优先）
+        sl_capped = False
+        df = klines_map.get(m["symbol"]) if klines_map else None
+        if df is not None:
+            sr = _try_sr_entry(df, price, is_bearish, atr, use_atr, signal_config)
+            if sr is not None:
+                entry, sl_price, tp_price, sl_capped = sr
+                signals.append(TradeSignal(
+                    symbol=m["symbol"],
+                    price=price,
+                    score=score,
+                    drop_pct=m.get("drop_pct", 0),
+                    volume_ratio=m.get("volume_ratio", 0),
+                    window_days=m.get("window_days", 0),
+                    entry_price=entry,
+                    stop_loss_price=sl_price,
+                    take_profit_price=tp_price,
+                    hold_days=signal_config.hold_days,
+                    signal_type=signal_type,
+                    mode=m.get("mode", ""),
+                    sl_capped=sl_capped,
+                    market_cap_m=m.get("market_cap_m", 0.0),
+                    entry_method="support_resistance",
+                ))
+                continue
+
+        # 原有折扣逻辑（兜底）
         discount = _entry_discount(score)
         if is_bearish:
             entry = price * (1 + discount)
@@ -97,15 +167,10 @@ def generate_signals(
                 sl_price = entry * (1 - signal_config.stop_loss)
                 tp_price = entry * (1 + signal_config.take_profit)
 
-        # ATR 止损截断：若止损距离超过 max_stop_loss，收紧到上限
-        sl_capped = False
         if use_atr:
             sl_dist = abs(sl_price - entry) / entry
             if sl_dist > signal_config.max_stop_loss:
-                if is_bearish:
-                    sl_price = entry * (1 + signal_config.max_stop_loss)
-                else:
-                    sl_price = entry * (1 - signal_config.max_stop_loss)
+                sl_price = entry * (1 + signal_config.max_stop_loss) if is_bearish else entry * (1 - signal_config.max_stop_loss)
                 sl_capped = True
 
         signals.append(TradeSignal(
@@ -123,5 +188,6 @@ def generate_signals(
             mode=m.get("mode", ""),
             sl_capped=sl_capped,
             market_cap_m=m.get("market_cap_m", 0.0),
+            entry_method="score_discount",
         ))
     return signals

@@ -3,6 +3,28 @@ import pandas as pd
 from scanner.signal import SignalConfig, TradeSignal, generate_signals, calculate_atr
 
 
+def _make_sr_df(support: float, resistance: float, current_price: float) -> pd.DataFrame:
+    """构造含明确支撑/阻力位的 df（25 根 K 线）。
+    Pivot low at index 10 = support，Pivot high at index 5 = resistance。
+    """
+    n = 25
+    lows = [0.0] * n
+    highs = [0.0] * n
+    for i in range(n):
+        dist = abs(i - 10)
+        lows[i] = support + dist * (current_price - support) / 12.0
+    lows[10] = support
+    for i in range(n):
+        dist = abs(i - 5)
+        highs[i] = resistance - dist * (resistance - current_price) / 8.0
+    highs[5] = resistance
+    closes = [(h + l) / 2 for h, l in zip(highs, lows)]
+    return pd.DataFrame({
+        "open": closes, "high": highs, "low": lows,
+        "close": closes, "volume": [1000.0] * n,
+    })
+
+
 def test_filter_by_min_score():
     """低于 min_score 的结果被过滤。"""
     matches = [
@@ -226,3 +248,64 @@ def test_market_cap_m_defaults_to_zero():
     config = SignalConfig(min_score=0.6, atr_sl_multiplier=2.0, atr_tp_multiplier=3.0)
     signals = generate_signals(matches, config)
     assert signals[0].market_cap_m == 0.0
+
+
+def test_sr_path_used_when_levels_found():
+    """有效支撑/阻力时走 SR 路径，entry_method='support_resistance'。"""
+    price = 100.0
+    support = 97.0    # (100-97)/100 = 3% < max_stop_loss=5%
+    resistance = 108.0
+    df = _make_sr_df(support, resistance, price)
+    matches = [{"symbol": "A/USDT", "price": price, "score": 0.85,
+                "drop_pct": 0.10, "volume_ratio": 0.3, "window_days": 14}]
+    config = SignalConfig(min_score=0.8, max_stop_loss=0.05)
+    signals = generate_signals(matches, config, klines_map={"A/USDT": df})
+    assert len(signals) == 1
+    s = signals[0]
+    assert s.entry_method == "support_resistance"
+    assert abs(s.entry_price - support * 1.005) < 0.01
+    assert abs(s.take_profit_price - resistance * 0.995) < 0.01
+    assert s.stop_loss_price < s.entry_price
+
+
+def test_sr_path_falls_back_when_support_too_far():
+    """支撑超出 max_stop_loss 时退回折扣逻辑。"""
+    price = 100.0
+    support = 93.0    # (100-93)/100 = 7% > max_stop_loss=5%
+    resistance = 110.0
+    df = _make_sr_df(support, resistance, price)
+    matches = [{"symbol": "B/USDT", "price": price, "score": 0.85,
+                "drop_pct": 0.10, "volume_ratio": 0.3, "window_days": 14}]
+    config = SignalConfig(min_score=0.8, max_stop_loss=0.05)
+    signals = generate_signals(matches, config, klines_map={"B/USDT": df})
+    assert len(signals) == 1
+    assert signals[0].entry_method == "score_discount"
+
+
+def test_sr_path_falls_back_when_no_klines_map():
+    """klines_map=None 时退回折扣逻辑。"""
+    matches = [{"symbol": "C/USDT", "price": 100.0, "score": 0.85,
+                "drop_pct": 0.10, "volume_ratio": 0.3, "window_days": 14}]
+    config = SignalConfig(min_score=0.8)
+    signals = generate_signals(matches, config, klines_map=None)
+    assert signals[0].entry_method == "score_discount"
+
+
+def test_sr_path_falls_back_when_symbol_not_in_map():
+    """symbol 不在 klines_map 时退回折扣逻辑。"""
+    matches = [{"symbol": "D/USDT", "price": 100.0, "score": 0.85,
+                "drop_pct": 0.10, "volume_ratio": 0.3, "window_days": 14}]
+    config = SignalConfig(min_score=0.8)
+    signals = generate_signals(matches, config, klines_map={"OTHER/USDT": pd.DataFrame()})
+    assert signals[0].entry_method == "score_discount"
+
+
+def test_existing_tests_unaffected_without_klines_map():
+    """不传 klines_map 时，已有行为完全不变（entry_method='score_discount'）。"""
+    matches = [{"symbol": "X/USDT", "price": 100.0, "score": 0.70,
+                "drop_pct": 0.10, "volume_ratio": 0.3, "window_days": 14}]
+    config = SignalConfig(min_score=0.6, stop_loss=0.05, take_profit=0.08, hold_days=3)
+    signals = generate_signals(matches, config)
+    s = signals[0]
+    assert abs(s.entry_price - 97.5) < 0.01
+    assert s.entry_method == "score_discount"
