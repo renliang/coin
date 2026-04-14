@@ -225,7 +225,7 @@ def run(config: dict, signal_config: SignalConfig, top_n: int | None = None, sym
         return
 
     # 信号过滤
-    signals = generate_signals(ranked, signal_config)
+    signals = generate_signals(ranked, signal_config, klines_map=klines)
     print(f"[信号] 评分≥{signal_config.min_score} 过滤: {len(ranked)} -> {len(signals)} 个")
 
     if not signals:
@@ -239,12 +239,13 @@ def run(config: dict, signal_config: SignalConfig, top_n: int | None = None, sym
     # 输出交易建议表格
     table_data = []
     for i, s in enumerate(signals, 1):
+        entry_tag = " [SR]" if s.entry_method == "support_resistance" else " [SD]"
         table_data.append([
             i,
             s.symbol,
             f"{s.price:.4f}",
             f"{s.score:.2f}",
-            f"{s.entry_price:.4f}",
+            f"{s.entry_price:.4f}" + entry_tag,
             f"{s.stop_loss_price:.4f}" + (" [已收紧]" if s.sl_capped else ""),
             f"{s.take_profit_price:.4f}",
             s.hold_days,
@@ -384,7 +385,7 @@ def run_divergence(config: dict, signal_config: SignalConfig, top_n: int | None 
         return
 
     # 信号过滤
-    signals = generate_signals(ranked, signal_config)
+    signals = generate_signals(ranked, signal_config, klines_map=klines)
     print(f"[信号] 评分≥{signal_config.min_score} 过滤: {len(ranked)} -> {len(signals)} 个")
 
     if not signals:
@@ -398,13 +399,14 @@ def run_divergence(config: dict, signal_config: SignalConfig, top_n: int | None 
     # 输出交易建议表格
     table_data = []
     for i, s in enumerate(signals, 1):
+        entry_tag = " [SR]" if s.entry_method == "support_resistance" else " [SD]"
         table_data.append([
             i,
             s.symbol,
             s.signal_type,
             f"{s.price:.4f}",
             f"{s.score:.2f}",
-            f"{s.entry_price:.4f}",
+            f"{s.entry_price:.4f}" + entry_tag,
             f"{s.stop_loss_price:.4f}" + (" [已收紧]" if s.sl_capped else ""),
             f"{s.take_profit_price:.4f}",
             s.hold_days,
@@ -551,7 +553,7 @@ def run_breakout(config: dict, signal_config: SignalConfig, top_n: int | None = 
         return
 
     # 信号过滤
-    signals = generate_signals(ranked, signal_config)
+    signals = generate_signals(ranked, signal_config, klines_map=klines)
     print(f"[信号] 评分≥{signal_config.min_score} 过滤: {len(ranked)} -> {len(signals)} 个")
 
     if not signals:
@@ -572,6 +574,7 @@ def run_breakout(config: dict, signal_config: SignalConfig, top_n: int | None = 
     table_data = []
     for i, s in enumerate(signals, 1):
         m = next(r for r in ranked if r["symbol"] == s.symbol)
+        entry_tag = " [SR]" if s.entry_method == "support_resistance" else " [SD]"
         table_data.append([
             i,
             s.symbol,
@@ -580,7 +583,7 @@ def run_breakout(config: dict, signal_config: SignalConfig, top_n: int | None = 
             f"{s.score:.2f}",
             f"{m.get('spike_date', '')}",
             f"{m.get('spike_vol_ratio', 0):.0f}x",
-            f"{s.entry_price:.4f}",
+            f"{s.entry_price:.4f}" + entry_tag,
             f"{s.stop_loss_price:.4f}",
             f"{s.take_profit_price:.4f}",
         ])
