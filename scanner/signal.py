@@ -6,7 +6,7 @@ import pandas as pd
 
 @dataclass
 class SignalConfig:
-    min_score: float = 0.6
+    min_score: float = 0.84
     hold_days: int = 3
     stop_loss: float = 0.05
     take_profit: float = 0.08
