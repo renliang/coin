@@ -13,3 +13,6 @@ web/node_modules/
 web/dist/
 logs/
 results/
+
+# ML 模型文件
+scanner/optimize/models/
