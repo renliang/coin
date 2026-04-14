@@ -170,6 +170,8 @@ def run(config: dict, signal_config: SignalConfig, top_n: int | None = None, sym
             "window_days": detection.window_days,
             "score": score,
             "atr": atr,
+            "r_squared": detection.r_squared,
+            "max_daily_pct": detection.max_daily_pct,
         })
 
     print(f"       形态命中 {len(matches)} 个")
@@ -235,6 +237,40 @@ def run(config: dict, signal_config: SignalConfig, top_n: int | None = None, sym
     # 保存到数据库（存信号，含点位）
     scan_id = save_scan(signals)
     print(f"\n[跟踪] 本次扫描ID: {scan_id}，已记录 {len(signals)} 个信号")
+
+    # 记录信号到 feedback 表
+    try:
+        from scanner.optimize.feedback import ensure_outcomes_table, record_signal_outcome
+        from scanner.optimize.feature_engine import extract_features
+        from scanner.kline import fetch_klines
+        import json as _json
+
+        ensure_outcomes_table()
+        btc_df = fetch_klines("BTC/USDT", days=30)
+        today = datetime.now().strftime("%Y-%m-%d")
+        ranked_map = {m["symbol"]: m for m in ranked}
+        for s in signals:
+            df = klines.get(s.symbol) if klines else None
+            if df is None:
+                continue
+            m = ranked_map.get(s.symbol, {})
+            match_dict = {
+                "symbol": s.symbol, "score": s.score,
+                "volume_ratio": s.volume_ratio, "drop_pct": s.drop_pct,
+                "r_squared": m.get("r_squared", 0),
+                "max_daily_pct": m.get("max_daily_pct", 0),
+                "window_days": s.window_days,
+            }
+            features = extract_features(match_dict, df, btc_df)
+            record_signal_outcome(
+                db_path="scanner.db",
+                scan_result_id=None, symbol=s.symbol,
+                signal_date=today, signal_price=s.price,
+                features_json=_json.dumps(features),
+                btc_price=float(btc_df["close"].iloc[-1]) if btc_df is not None else 0,
+            )
+    except Exception as e:
+        print(f"[feedback] 记录失败（不影响扫描）: {e}")
 
     # 输出交易建议表格
     table_data = []
@@ -395,6 +431,36 @@ def run_divergence(config: dict, signal_config: SignalConfig, top_n: int | None 
     # 保存到数据库（存信号，含点位）
     scan_id = save_scan(signals, mode="divergence")
     print(f"\n[跟踪] 本次扫描ID: {scan_id}，已记录 {len(signals)} 个信号")
+
+    # 记录信号到 feedback 表
+    try:
+        from scanner.optimize.feedback import ensure_outcomes_table, record_signal_outcome
+        from scanner.optimize.feature_engine import extract_features
+        from scanner.kline import fetch_klines
+        import json as _json
+
+        ensure_outcomes_table()
+        btc_df = fetch_klines("BTC/USDT", days=30)
+        today = datetime.now().strftime("%Y-%m-%d")
+        for s in signals:
+            df = klines.get(s.symbol) if klines else None
+            if df is None:
+                continue
+            match_dict = {
+                "symbol": s.symbol, "score": s.score,
+                "volume_ratio": s.volume_ratio, "drop_pct": s.drop_pct,
+                "r_squared": 0, "max_daily_pct": 0, "window_days": s.window_days,
+            }
+            features = extract_features(match_dict, df, btc_df)
+            record_signal_outcome(
+                db_path="scanner.db",
+                scan_result_id=None, symbol=s.symbol,
+                signal_date=today, signal_price=s.price,
+                features_json=_json.dumps(features),
+                btc_price=float(btc_df["close"].iloc[-1]) if btc_df is not None else 0,
+            )
+    except Exception as e:
+        print(f"[feedback] 记录失败（不影响扫描）: {e}")
 
     # 输出交易建议表格
     table_data = []
