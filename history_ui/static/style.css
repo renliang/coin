@@ -256,8 +256,8 @@ tbody tr:hover {
 
 /* Tab */
 .tab-bar { display: flex; gap: 0.5rem; margin-bottom: 1rem; }
-.tab-btn { padding: 0.4rem 1rem; border: 1px solid #444; background: #1e1e1e; color: #ccc; border-radius: 4px; cursor: pointer; font-size: 0.85rem; }
-.tab-btn.active { background: #2a6496; border-color: #2a6496; color: #fff; }
+.tab-btn { padding: 0.4rem 1rem; border: 1px solid #ccc; background: #fff; color: #374151; border-radius: 4px; cursor: pointer; font-size: 0.85rem; }
+.tab-btn.active { background: #2563eb; border-color: #2563eb; color: #fff; }
 .tab-panel.hidden { display: none; }
-.site-nav-link { color: #aaa; text-decoration: none; font-size: 0.9rem; margin-right: 1rem; }
-.site-nav-link:hover { color: #fff; }
+.site-nav-link { color: #374151; text-decoration: none; font-size: 0.9rem; margin-right: 1rem; }
+.site-nav-link:hover { color: #2563eb; }
