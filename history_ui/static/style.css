@@ -254,6 +254,13 @@ tbody tr:hover {
   font-weight: 600;
 }
 
+/* 手动扫描工具栏 */
+.scan-toolbar { display: flex; align-items: center; gap: 0.75rem; margin-bottom: 1rem; }
+.btn-scan { padding: 0.4rem 1.1rem; background: #16a34a; color: #fff; border: none; border-radius: 4px; cursor: pointer; font-weight: 600; font-size: 0.9rem; }
+.btn-scan:hover:not(:disabled) { background: #15803d; }
+.btn-scan:disabled { background: #86efac; cursor: not-allowed; }
+.scan-status-text { font-size: 0.85rem; color: #6b7280; }
+
 /* Tab */
 .tab-bar { display: flex; gap: 0.5rem; margin-bottom: 1rem; }
 .tab-btn { padding: 0.4rem 1rem; border: 1px solid #ccc; background: #fff; color: #374151; border-radius: 4px; cursor: pointer; font-size: 0.85rem; }

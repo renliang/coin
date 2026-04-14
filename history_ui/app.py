@@ -1,6 +1,8 @@
 import os
+import threading
+import time
 
-from flask import Flask, redirect, render_template, request, url_for
+from flask import Flask, jsonify, redirect, render_template, request, url_for
 
 from scanner.tracker import (
     get_closed_trades_by_symbol,
@@ -8,6 +10,10 @@ from scanner.tracker import (
     get_tracked_symbols,
     query_scan_results,
 )
+
+# 手动扫描状态（单例，进程内共享）
+_scan_lock = threading.Lock()
+_scan_state: dict = {"running": False, "started_at": None, "finished_at": None, "error": None}
 
 
 def create_app() -> Flask:
@@ -63,6 +69,44 @@ def create_app() -> Flask:
             scan_time_from=scan_time_from,
             scan_time_to=scan_time_to,
         )
+
+    @app.route("/scan", methods=["POST"])
+    def trigger_scan():
+        if not _scan_lock.acquire(blocking=False):
+            return jsonify({"started": False, "reason": "已有扫描在进行中"}), 409
+
+        def _run():
+            _scan_state["running"] = True
+            _scan_state["started_at"] = time.time()
+            _scan_state["error"] = None
+            try:
+                from main import load_config, run, run_breakout, run_divergence
+                cfg, sig_cfg, _, _ = load_config(
+                    os.path.join(os.path.dirname(__file__), "..", "config.yaml")
+                )
+                try:
+                    run(cfg, sig_cfg)
+                except Exception as e:
+                    _scan_state["error"] = f"accumulation: {e}"
+                try:
+                    run_divergence(cfg, sig_cfg)
+                except Exception as e:
+                    _scan_state["error"] = f"divergence: {e}"
+                try:
+                    run_breakout(cfg, sig_cfg)
+                except Exception as e:
+                    _scan_state["error"] = f"breakout: {e}"
+            finally:
+                _scan_state["running"] = False
+                _scan_state["finished_at"] = time.time()
+                _scan_lock.release()
+
+        threading.Thread(target=_run, daemon=True).start()
+        return jsonify({"started": True})
+
+    @app.route("/scan/status")
+    def scan_status():
+        return jsonify(dict(_scan_state))
 
     @app.route("/search")
     def search():

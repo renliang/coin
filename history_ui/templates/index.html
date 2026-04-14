@@ -1,6 +1,11 @@
 {% extends "base.html" %}
 {% block title %}今日扫描{% endblock %}
 {% block content %}
+<div class="scan-toolbar">
+  <button id="scan-btn" class="btn-scan" onclick="triggerScan()">立即扫描</button>
+  <span id="scan-status" class="scan-status-text"></span>
+</div>
+
 <div class="tab-bar">
   <button class="tab-btn active" data-tab="accum">Accumulation</button>
   <button class="tab-btn" data-tab="div">Divergence</button>
@@ -57,6 +62,48 @@
       btn.classList.add('active');
       document.getElementById('tab-' + btn.dataset.tab).classList.remove('hidden');
     });
+  });
+
+  let _pollTimer = null;
+
+  function triggerScan() {
+    const btn = document.getElementById('scan-btn');
+    const statusEl = document.getElementById('scan-status');
+    btn.disabled = true;
+    statusEl.textContent = '扫描启动中…';
+    fetch('/scan', { method: 'POST' })
+      .then(r => r.json())
+      .then(data => {
+        if (data.started) {
+          statusEl.textContent = '扫描进行中…';
+          _pollTimer = setInterval(pollStatus, 3000);
+        } else {
+          statusEl.textContent = data.reason || '启动失败';
+          btn.disabled = false;
+        }
+      })
+      .catch(() => { statusEl.textContent = '请求失败'; btn.disabled = false; });
+  }
+
+  function pollStatus() {
+    fetch('/scan/status')
+      .then(r => r.json())
+      .then(data => {
+        if (!data.running) {
+          clearInterval(_pollTimer);
+          document.getElementById('scan-status').textContent = data.error ? '扫描出错: ' + data.error : '扫描完成，刷新中…';
+          setTimeout(() => location.reload(), 800);
+        }
+      });
+  }
+
+  // 页面加载时检查是否已有扫描在跑
+  fetch('/scan/status').then(r => r.json()).then(data => {
+    if (data.running) {
+      document.getElementById('scan-btn').disabled = true;
+      document.getElementById('scan-status').textContent = '扫描进行中…';
+      _pollTimer = setInterval(pollStatus, 3000);
+    }
   });
 </script>
 {% endblock %}
