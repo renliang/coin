@@ -882,22 +882,36 @@ def run_serve(
     scheduler = BlockingScheduler()
 
     # 定时扫描任务
+    from datetime import datetime, timedelta
     hour, minute = map(int, schedule_config.scan_time.split(":"))
 
     def scheduled_scan():
-        logger.info("=== 定时扫描开始 ===")
+        logger.info("=== 定时扫描开始（三模式）===")
+        div_signals = []
         try:
-            signals = run_divergence(config, signal_config)
-            if signals and trading_config.enabled:
-                execute_trading_pipeline(signals, trading_config)
-            elif not trading_config.enabled:
-                logger.info("trading.enabled=false，仅扫描不下单")
+            run(config, signal_config)
         except Exception as e:
-            logger.error("定时扫描异常: %s", e)
+            logger.error("accumulation 扫描异常: %s", e)
+        try:
+            div_signals = run_divergence(config, signal_config)
+        except Exception as e:
+            logger.error("divergence 扫描异常: %s", e)
+        try:
+            run_breakout(config, signal_config)
+        except Exception as e:
+            logger.error("breakout 扫描异常: %s", e)
+        if div_signals and trading_config.enabled:
+            execute_trading_pipeline(div_signals, trading_config)
+        elif not trading_config.enabled:
+            logger.info("trading.enabled=false，仅扫描不下单")
         logger.info("=== 定时扫描结束 ===")
 
+    # 启动时立即跑一次（避免进程在 08:10 之后启动导致当天扫描被跳过）
+    scheduler.add_job(scheduled_scan, "date",
+                      run_date=datetime.now() + timedelta(seconds=10),
+                      id="startup_scan")
     scheduler.add_job(scheduled_scan, "cron", hour=hour, minute=minute, id="daily_scan")
-    logger.info("定时扫描已注册: 每天 %s", schedule_config.scan_time)
+    logger.info("定时扫描已注册: 启动后10秒执行一次，之后每天 %s", schedule_config.scan_time)
 
     # 订单监控任务
     if trading_config.enabled:
