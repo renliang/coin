@@ -123,7 +123,6 @@ def generate_signals(
         use_atr = atr > 0 and not math.isnan(atr)
 
         # 支撑/阻力路径（优先）
-        sl_capped = False
         df = klines_map.get(m["symbol"]) if klines_map else None
         if df is not None:
             sr = _try_sr_entry(df, price, is_bearish, atr, use_atr, signal_config)
@@ -149,6 +148,7 @@ def generate_signals(
                 continue
 
         # 原有折扣逻辑（兜底）
+        sl_capped = False
         discount = _entry_discount(score)
         if is_bearish:
             entry = price * (1 + discount)

@@ -309,3 +309,39 @@ def test_existing_tests_unaffected_without_klines_map():
     s = signals[0]
     assert abs(s.entry_price - 97.5) < 0.01
     assert s.entry_method == "score_discount"
+
+
+def test_sr_path_bearish_used_when_levels_found():
+    """空头（顶背离）有效阻力/支撑时走 SR 路径。
+    对称逻辑：entry = resistance*0.995，TP = support*1.005（支撑上方平仓），SL 在阻力上方。
+    """
+    price = 100.0
+    resistance = 103.0   # (103-100)/100 = 3% < max_stop_loss=5%，阻力在附近
+    support = 90.0       # 支撑在下方，作为 TP 目标
+    df = _make_sr_df(support, resistance, price)
+    matches = [{"symbol": "E/USDT", "price": price, "score": 0.85,
+                "drop_pct": 0.0, "volume_ratio": 0.0, "window_days": 0,
+                "signal_type": "顶背离", "mode": "divergence"}]
+    config = SignalConfig(min_score=0.8, max_stop_loss=0.05)
+    signals = generate_signals(matches, config, klines_map={"E/USDT": df})
+    assert len(signals) == 1
+    s = signals[0]
+    assert s.entry_method == "support_resistance"
+    assert abs(s.entry_price - resistance * 0.995) < 0.01   # 入场：阻力下方 0.5%
+    assert abs(s.take_profit_price - support * 1.005) < 0.01 # TP：支撑上方 0.5%（空头平仓前于支撑）
+    assert s.stop_loss_price > s.entry_price                  # 止损在入场价上方（空头）
+
+
+def test_sr_path_bearish_fallback_when_resistance_too_far():
+    """空头阻力超出 max_stop_loss 时退回折扣逻辑。"""
+    price = 100.0
+    resistance = 108.0   # (108-100)/100 = 8% > max_stop_loss=5%
+    support = 90.0
+    df = _make_sr_df(support, resistance, price)
+    matches = [{"symbol": "F/USDT", "price": price, "score": 0.85,
+                "drop_pct": 0.0, "volume_ratio": 0.0, "window_days": 0,
+                "signal_type": "顶背离", "mode": "divergence"}]
+    config = SignalConfig(min_score=0.8, max_stop_loss=0.05)
+    signals = generate_signals(matches, config, klines_map={"F/USDT": df})
+    assert len(signals) == 1
+    assert signals[0].entry_method == "score_discount"
