@@ -95,3 +95,15 @@ def test_no_support_below_price():
     df = _make_df(lows)
     result = nearest_support(df, price=70.0, max_dist=0.05)
     assert result is None
+
+
+def test_pivot_lows_invalid_left_raises():
+    df = _make_df([100.0] * 20)
+    with pytest.raises(ValueError, match="left and right must be >= 1"):
+        find_pivot_lows(df, left=0, right=5)
+
+
+def test_pivot_highs_invalid_right_raises():
+    df = _make_df([100.0] * 20)
+    with pytest.raises(ValueError, match="left and right must be >= 1"):
+        find_pivot_highs(df, left=5, right=0)
