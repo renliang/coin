@@ -18,6 +18,15 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 .venv/bin/python main.py optimize report            # view optimized params
 .venv/bin/python main.py retrain                    # retrain ML model
 
+# Sentiment (舆情分析)
+.venv/bin/python main.py sentiment scan             # 手动采集舆情
+.venv/bin/python main.py sentiment status            # 查看情绪指标
+
+# Portfolio (组合管理)
+.venv/bin/python main.py portfolio status            # 查看策略权重
+.venv/bin/python main.py portfolio rebalance         # 手动再平衡
+.venv/bin/python main.py portfolio report            # 生成绩效报告
+
 # Legacy flag style still works (with deprecation notice):
 .venv/bin/python main.py --mode divergence          # → scan --mode divergence
 .venv/bin/python main.py --backtest --days 180      # → backtest --days 180
@@ -62,7 +71,25 @@ config.yaml → load_config()
 - `new_coin.py` — Recent listings discovery via binary search for first candle date.
 - `listing_intel.py` — L2 enrichment: Binance CMS announcements, DexScreener chain pools, rule-based DD scoring.
 
-**main.py** (627 lines) — CLI entry point with argparse. Four execution paths: `run()`, `run_divergence()`, `run_new_coin_observation()`, `run_backtest_cli()`.
+**sentiment/ module responsibilities:**
+- `models.py` — `SentimentItem`, `SentimentSignal` frozen dataclasses.
+- `store.py` — SQLite persistence for sentiment items and signals.
+- `sources/twitter.py` — Twitter/X scraping via snscrape.
+- `sources/telegram.py` — Telegram channel monitoring via Telethon.
+- `sources/news.py` — CryptoPanic API + RSS aggregation.
+- `sources/onchain.py` — Etherscan whale transfer tracking.
+- `analyzer.py` — VADER + crypto lexicon + onchain rule engine.
+- `aggregator.py` — Multi-source fusion → `SentimentSignal`; `compute_boost()` for score adjustment.
+
+**portfolio/ module responsibilities:**
+- `models.py` — `StrategyResult` (frozen), `PortfolioState` (mutable) dataclasses.
+- `store.py` — SQLite for NAV history, strategy weights, risk events.
+- `allocator.py` — Riskfolio-Lib CVaR weight optimization.
+- `risk.py` — Three-layer risk control (position/strategy/portfolio level).
+- `rebalancer.py` — Drift detection + adjustment calculation.
+- `tracker.py` — QuantStats performance reports (HTML).
+
+**main.py** — CLI entry point with argparse subcommands. Execution paths include scanning, backtesting, sentiment analysis, portfolio management, and serve mode.
 
 ## Key Conventions
 
@@ -73,6 +100,8 @@ config.yaml → load_config()
 - Tests use `_make_klines()` helper to construct synthetic DataFrames. No external API calls in tests.
 - Config has sensible defaults in code; YAML overrides are optional per-field.
 - Results output to `results/` directory as timestamped JSON + TXT pairs.
+- Sentiment boost (±20% max) adjusts scanner scores when sentiment module is enabled. Falls back to boost=0 if unavailable.
+- Portfolio weights are optimized via CVaR and persisted in SQLite. Three-layer risk control halts trading on excessive drawdown.
 
 ## Language
 
