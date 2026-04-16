@@ -16,3 +16,19 @@ services:
       - COIN_DB_PATH=/app/data/scanner.db
       - API_HOST=0.0.0.0
       - API_PORT=8000
+
+  worker:
+    build: .
+    container_name: coin-worker
+    restart: unless-stopped
+    command: python main.py serve
+    volumes:
+      - ./data:/app/data
+      - ./logs:/app/logs
+      - ./results:/app/results
+    env_file:
+      - .env.prod
+    environment:
+      - COIN_DB_PATH=/app/data/scanner.db
+    depends_on:
+      - coin

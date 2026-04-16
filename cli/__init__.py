@@ -18,7 +18,7 @@ def main(argv: list[str] | None = None) -> None:
     p_scan = sub.add_parser("scan", help="扫描信号（蓄力/背离/突破）")
     p_scan.add_argument(
         "--mode", "-m",
-        choices=["accumulation", "divergence", "breakout"],
+        choices=["accumulation", "divergence", "breakout", "smc"],
         default="divergence",
         help="扫描模式 (默认: divergence)",
     )
@@ -95,6 +95,7 @@ def main(argv: list[str] | None = None) -> None:
         run,
         run_divergence,
         run_breakout,
+        run_smc,
         run_backtest_cli,
         run_serve,
         run_stats,
@@ -116,7 +117,9 @@ def main(argv: list[str] | None = None) -> None:
     if args.command == "scan":
         if args.no_confirm:
             signal_config = replace(signal_config, confirmation=False)
-        if args.mode == "breakout":
+        if args.mode == "smc":
+            run_smc(config, signal_config, top_n=args.top, symbols_override=args.symbols)
+        elif args.mode == "breakout":
             run_breakout(config, signal_config, top_n=args.top, symbols_override=args.symbols)
         elif args.mode == "divergence":
             signals = run_divergence(config, signal_config, top_n=args.top, symbols_override=args.symbols)

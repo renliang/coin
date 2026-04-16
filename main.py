@@ -87,6 +87,8 @@ def load_config(
     scanner_cfg = dict(raw.get("scanner", {}))
     if "breakout" in raw:
         scanner_cfg["breakout"] = raw["breakout"]
+    if "smc" in raw:
+        scanner_cfg["smc"] = raw["smc"]
 
     # trading config
     t = raw.get("trading", {})
@@ -749,6 +751,246 @@ def run_breakout(config: dict, signal_config: SignalConfig, top_n: int | None = 
     print(f"结果已保存到 {json_path} 和 {txt_path}")
 
 
+def run_smc(config: dict, signal_config: SignalConfig, top_n: int | None = None, symbols_override: list[str] | None = None):
+    from scanner.smc import detect_smc
+    smc_cfg = config.get("smc", {})
+    top_n = top_n or smc_cfg.get("top_n", 20)
+    max_market_cap = config.get("max_market_cap", 100_000_000)
+
+    # SMC 模式可单独设置 min_score（默认 0.3，因为 SMC 评分天然低于蓄力/背离模式）
+    smc_min_score = smc_cfg.get("min_score", 0.3)
+    if smc_min_score != signal_config.min_score:
+        signal_config = replace(signal_config, min_score=smc_min_score)
+
+    # Step 1: 获取交易对列表
+    if symbols_override:
+        symbols = symbols_override
+        print(f"[1/4] 使用指定的 {len(symbols)} 个交易对")
+    else:
+        print("[1/4] 获取Binance U本位永续与现货交集列表...")
+        symbols = fetch_futures_symbols()
+        print(f"       共 {len(symbols)} 个合约交易对")
+
+    if not symbols:
+        print("没有找到交易对。")
+        return
+
+    # Step 2: 拉K线（SMC 需要 90 天数据）
+    print(f"[2/4] 从Binance拉取K线数据（{len(symbols)}个交易对，90天）...")
+    klines = fetch_klines_batch(symbols, days=90, delay=0.5)
+    print(f"       成功获取 {len(klines)} 个交易对的K线")
+
+    # Step 3: SMC 检测
+    print("[3/4] Smart Money Concepts 检测中...")
+    matches = []
+    for symbol, df in klines.items():
+        result = detect_smc(
+            df,
+            swing_length=smc_cfg.get("swing_length", 10),
+            freshness_candles=smc_cfg.get("freshness_candles", 10),
+            fvg_lookback=smc_cfg.get("fvg_lookback", 30),
+            ob_lookback=smc_cfg.get("ob_lookback", 30),
+            proximity_max=smc_cfg.get("proximity_max", 0.05),
+        )
+        if not result.matched:
+            continue
+        price = float(df["close"].iloc[-1])
+        atr = calculate_atr(df, period=signal_config.atr_period)
+
+        # 用 OB/FVG 作为入场区域
+        entry_zone_top = 0.0
+        entry_zone_bottom = 0.0
+        if result.has_ob:
+            entry_zone_top = result.ob_top
+            entry_zone_bottom = result.ob_bottom
+        elif result.has_fvg:
+            entry_zone_top = result.fvg_top
+            entry_zone_bottom = result.fvg_bottom
+
+        matches.append({
+            "symbol": symbol,
+            "price": price,
+            "drop_pct": 0,
+            "volume_ratio": 0,
+            "window_days": 0,
+            "score": result.score,
+            "signal_type": result.signal_type,
+            "mode": "smc",
+            "atr": atr,
+            "direction": result.direction,
+            "structure_type": result.structure_type,
+            "structure_level": result.structure_level,
+            "has_fvg": result.has_fvg,
+            "fvg_top": result.fvg_top,
+            "fvg_bottom": result.fvg_bottom,
+            "has_ob": result.has_ob,
+            "ob_top": result.ob_top,
+            "ob_bottom": result.ob_bottom,
+            "entry_zone_top": entry_zone_top,
+            "entry_zone_bottom": entry_zone_bottom,
+            "score_breakdown": result.score_breakdown_dict(),
+        })
+
+    print(f"       命中 {len(matches)} 个")
+
+    if not matches:
+        print("\n未找到 SMC 结构变化的币种。")
+        return
+
+    # Step 4: 市值过滤
+    skip_cap = config.get("skip_market_cap_filter", False)
+    if not symbols_override and not skip_cap:
+        base_symbols = [m["symbol"].split("/")[0] for m in matches]
+        print(f"[4/4] 查询 {len(base_symbols)} 个命中币种的市值...")
+        market_caps = fetch_market_caps(base_symbols, page_delay=config.get("page_delay", 30))
+        for m in matches:
+            base = m["symbol"].split("/")[0]
+            m["market_cap_m"] = market_caps.get(base, 0) / 1e6
+        before = len(matches)
+        matches = [m for m in matches if 0 < m["market_cap_m"] <= max_market_cap / 1e6]
+        print(f"       市值过滤: {before} -> {len(matches)} 个 (< ${max_market_cap / 1e6:.0f}M)")
+    else:
+        print("[4/4] 跳过市值过滤")
+        for m in matches:
+            m["market_cap_m"] = 0
+
+    if not matches:
+        print("\n过滤后没有符合条件的币种。")
+        return
+
+    ranked = rank_results(matches, top_n=top_n)
+
+    # 确认层过滤 + 加分
+    if signal_config.confirmation:
+        confirmed = []
+        filtered_names = []
+        for m in ranked:
+            direction = "short" if m.get("direction") == "bearish" else "long"
+            result = confirm_signal(klines[m["symbol"]], direction, signal_config.confirmation_min_pass)
+            if result.passed:
+                m["base_score"] = m["score"]
+                m["confirm_bonus"] = result.bonus
+                m["score"] = round(m["base_score"] + result.bonus, 4)
+                confirmed.append(m)
+            else:
+                filtered_names.append(m["symbol"])
+        if filtered_names:
+            print(f"[确认] {len(ranked)} -> {len(confirmed)} 个 (过滤: {', '.join(filtered_names[:5])}{'...' if len(filtered_names) > 5 else ''})")
+        ranked = confirmed
+        ranked.sort(key=lambda x: x["score"], reverse=True)
+
+    if not ranked:
+        print("\n确认层过滤后没有剩余信号。")
+        return
+
+    # 信号过滤
+    signals = generate_signals(ranked, signal_config, klines_map=klines)
+    print(f"[信号] 评分≥{signal_config.min_score} 过滤: {len(ranked)} -> {len(signals)} 个")
+
+    if not signals:
+        print("\n没有达到信号门槛的币种。")
+        return
+
+    # 用 SMC 特有的 entry zone 优化止损止盈
+    for s in signals:
+        m = next(r for r in ranked if r["symbol"] == s.symbol)
+        is_bearish = m.get("direction") == "bearish"
+        struct_level = m.get("structure_level", 0)
+        ez_top = m.get("entry_zone_top", 0)
+        ez_bottom = m.get("entry_zone_bottom", 0)
+        if is_bearish:
+            # 看空：止损在结构突破位上方，止盈用 entry zone 下方
+            if struct_level > 0 and struct_level > s.entry_price:
+                s.stop_loss_price = round(struct_level * 1.01, 6)
+            if ez_bottom > 0 and ez_bottom < s.entry_price:
+                s.take_profit_price = round(ez_bottom * 0.99, 6)
+        else:
+            # 看多：止损在结构突破位下方，止盈用 ATR 或 entry zone 上方
+            if struct_level > 0 and struct_level < s.entry_price:
+                s.stop_loss_price = round(struct_level * 0.99, 6)
+            if ez_top > 0 and ez_top > s.entry_price:
+                s.take_profit_price = round(ez_top * 1.01, 6)
+
+    # 舆情评分加成
+    sentiment_config = config.get("_sentiment_config", {})
+    if sentiment_config.get("enabled"):
+        from sentiment.store import query_latest_signal
+        from sentiment.aggregator import compute_boost
+        from sentiment.models import SentimentSignal
+        from dataclasses import replace as dc_replace
+        boost_range = sentiment_config.get("boost_range", 0.2)
+        boosted = []
+        for sig in signals:
+            latest = query_latest_signal(sig.symbol)
+            if latest:
+                sent_sig = SentimentSignal(symbol=latest.symbol, score=latest.score,
+                    direction=latest.direction, confidence=latest.confidence)
+                boost = compute_boost(sent_sig, boost_range)
+                new_score = max(0.0, min(1.0, sig.score * (1 + boost)))
+                boosted.append(dc_replace(sig, score=new_score))
+            else:
+                boosted.append(sig)
+        signals = boosted
+
+    # 保存到数据库
+    scan_id = save_scan(signals, mode="smc")
+    print(f"\n[跟踪] 本次扫描ID: {scan_id}，已记录 {len(signals)} 个信号")
+
+    # 输出表格
+    table_data = []
+    for i, s in enumerate(signals, 1):
+        m = next(r for r in ranked if r["symbol"] == s.symbol)
+        entry_tag = " [SR]" if s.entry_method == "support_resistance" else " [SD]"
+        fvg_tag = "FVG" if m.get("has_fvg") else ""
+        ob_tag = "OB" if m.get("has_ob") else ""
+        zone_tags = "+".join(filter(None, [m.get("structure_type", ""), fvg_tag, ob_tag]))
+        table_data.append([
+            i,
+            s.symbol,
+            s.signal_type,
+            zone_tags,
+            f"{s.price:.4f}",
+            f"{s.score:.2f}",
+            f"{s.entry_price:.4f}" + entry_tag,
+            f"{s.stop_loss_price:.4f}",
+            f"{s.take_profit_price:.4f}",
+        ])
+
+    headers = ["排名", "币种", "方向", "信号组合", "价格", "评分", "入场", "止损", "止盈"]
+    print(f"\n找到 {len(signals)} 个 SMC 交易信号:\n")
+    print(tabulate(table_data, headers=headers, tablefmt="simple"))
+
+    # 保存文件
+    os.makedirs("results", exist_ok=True)
+    ts = datetime.now().strftime("%Y-%m-%d_%H%M%S")
+    json_data = [
+        {
+            "symbol": s.symbol,
+            "signal_type": s.signal_type,
+            "price": s.price,
+            "score": s.score,
+            "structure_type": next(r for r in ranked if r["symbol"] == s.symbol).get("structure_type", ""),
+            "has_fvg": next(r for r in ranked if r["symbol"] == s.symbol).get("has_fvg", False),
+            "has_ob": next(r for r in ranked if r["symbol"] == s.symbol).get("has_ob", False),
+            "entry_price": s.entry_price,
+            "stop_loss_price": s.stop_loss_price,
+            "take_profit_price": s.take_profit_price,
+        }
+        for s in signals
+    ]
+    json_path = f"results/smc_{ts}.json"
+    with open(json_path, "w") as f:
+        json.dump(json_data, f, ensure_ascii=False, indent=2)
+    txt_path = f"results/smc_{ts}.txt"
+    with open(txt_path, "w") as f:
+        f.write(f"扫描时间: {ts}\n")
+        f.write(f"模式: Smart Money Concepts\n")
+        f.write(f"找到 {len(signals)} 个交易信号:\n\n")
+        f.write(tabulate(table_data, headers=headers, tablefmt="simple"))
+        f.write("\n")
+    print(f"结果已保存到 {json_path} 和 {txt_path}")
+
+
 def show_tracking():
     """显示所有跟踪中的币种"""
     tracked = get_tracked_symbols()
@@ -1033,7 +1275,9 @@ def run_serve(
         except Exception as e:
             logger.error("breakout 扫描异常: %s", e)
         if div_signals and trading_config.enabled:
-            execute_trading_pipeline(div_signals, trading_config)
+            top_signals = sorted(div_signals, key=lambda s: s.score, reverse=True)[:2]
+            logger.info("背离信号 %d 个，挂单 top %d (按 score 排序)", len(div_signals), len(top_signals))
+            execute_trading_pipeline(top_signals, trading_config)
         elif not trading_config.enabled:
             logger.info("trading.enabled=false，仅扫描不下单")
         logger.info("=== 定时扫描结束 ===")
@@ -1538,7 +1782,7 @@ def main():
 
     # 兼容旧 flag 格式 — 解析后转换为新子命令
     parser = argparse.ArgumentParser(description="币种形态筛选器（旧命令格式，建议使用子命令：coin scan / coin backtest / ...）")
-    parser.add_argument("--mode", choices=["accumulation", "divergence", "breakout"], default="divergence")
+    parser.add_argument("--mode", choices=["accumulation", "divergence", "breakout", "smc"], default="divergence")
     parser.add_argument("--top", type=int)
     parser.add_argument("--config", default="config.yaml")
     parser.add_argument("--symbols", nargs="+")

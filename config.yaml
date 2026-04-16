@@ -1,3 +1,12 @@
+smc:
+  swing_length: 5
+  freshness_candles: 50
+  fvg_lookback: 50
+  ob_lookback: 50
+  proximity_max: 0.10
+  min_score: 0.3
+  top_n: 20
+
 breakout:
   freshness_days: 3
   max_pullback_days: 10
