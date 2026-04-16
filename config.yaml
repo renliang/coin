@@ -92,12 +92,13 @@ trading:
     0.9: 0.05
 
 sentiment:
-  enabled: false
+  enabled: true
   weights:
-    twitter: 0.3
-    telegram: 0.2
-    news: 0.3
+    feargreed: 0.25
+    news: 0.35
     onchain: 0.2
+    twitter: 0.1
+    telegram: 0.1
   boost_range: 0.2
   vader_threshold: 0.5
   llm_enabled: false

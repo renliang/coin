@@ -1274,13 +1274,48 @@ def run_sentiment_scan(sentiment_config: dict, symbols_override: list[str] | Non
         return
 
     from sentiment.sources.news import CryptoPanicSource, RSSSource
+    from sentiment.sources.feargreed import FearGreedSource
+    from sentiment.sources.onchain import EtherscanSource
     from sentiment.analyzer import analyze_text, analyze_onchain
     from sentiment.store import save_items, save_signal
     from sentiment.aggregator import aggregate
 
     items = []
 
-    # CryptoPanic
+    # 恐惧贪婪指数（免费，无需 key）
+    try:
+        fg_src = FearGreedSource()
+        fg_items = fg_src.fetch()
+        items.extend(fg_items)
+        print(f"[sentiment] 恐惧贪婪指数 获取 {len(fg_items)} 条")
+    except Exception as e:
+        print(f"[sentiment] 恐惧贪婪指数 获取失败: {e}")
+
+    # RSS（免费，无需 key）
+    try:
+        rss_src = RSSSource()
+        rss_items = rss_src.fetch(symbols=symbols_override)
+        items.extend(rss_items)
+        print(f"[sentiment] RSS 获取 {len(rss_items)} 条")
+    except Exception as e:
+        print(f"[sentiment] RSS 获取失败: {e}")
+
+    # Etherscan 链上（需要免费 key）
+    onchain_cfg = sentiment_config.get("onchain", {})
+    etherscan_key = os.environ.get(onchain_cfg.get("etherscan_api_key_env", "ETHERSCAN_API_KEY"), "")
+    if etherscan_key:
+        try:
+            eth_src = EtherscanSource(
+                api_key=etherscan_key,
+                min_value_usd=onchain_cfg.get("min_transfer_usd", 1_000_000),
+            )
+            eth_items = eth_src.fetch()
+            items.extend(eth_items)
+            print(f"[sentiment] Etherscan 获取 {len(eth_items)} 条")
+        except Exception as e:
+            print(f"[sentiment] Etherscan 获取失败: {e}")
+
+    # CryptoPanic（可选，需付费 key）
     news_cfg = sentiment_config.get("news", {})
     api_key_env = news_cfg.get("cryptopanic_api_key_env", "CRYPTOPANIC_API_KEY")
     api_key = os.environ.get(api_key_env, "")
@@ -1292,17 +1327,6 @@ def run_sentiment_scan(sentiment_config: dict, symbols_override: list[str] | Non
             print(f"[sentiment] CryptoPanic 获取 {len(fetched)} 条")
         except Exception as e:
             print(f"[sentiment] CryptoPanic 获取失败: {e}")
-    else:
-        print(f"[sentiment] 未配置 {api_key_env}，跳过 CryptoPanic")
-
-    # RSS
-    try:
-        rss_src = RSSSource()
-        rss_items = rss_src.fetch(symbols=symbols_override)
-        items.extend(rss_items)
-        print(f"[sentiment] RSS 获取 {len(rss_items)} 条")
-    except Exception as e:
-        print(f"[sentiment] RSS 获取失败: {e}")
 
     if not items:
         print("[sentiment] 无可用舆情数据")
