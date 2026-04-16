@@ -9,10 +9,13 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
+
+_DEFAULT_DB_PATH = os.environ.get("COIN_DB_PATH", "scanner.db")
 
 from scanner.optimize.feature_engine import FEATURE_NAMES
 from scanner.optimize.feedback import get_labeled_outcomes
@@ -39,7 +42,7 @@ class RetrainReport:
 
 
 def run_retrain(
-    db_path: str = "scanner.db",
+    db_path: str = _DEFAULT_DB_PATH,
     models_dir: str = "scanner/optimize/models",
     results_dir: str = "results",
 ) -> RetrainReport:

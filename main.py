@@ -303,7 +303,7 @@ def run(config: dict, signal_config: SignalConfig, top_n: int | None = None, sym
             }
             features = extract_features(match_dict, df, btc_df)
             record_signal_outcome(
-                db_path="scanner.db",
+                db_path=os.environ.get("COIN_DB_PATH", "scanner.db"),
                 scan_result_id=None, symbol=s.symbol,
                 signal_date=today, signal_price=s.price,
                 features_json=_json.dumps(features),
@@ -515,7 +515,7 @@ def run_divergence(config: dict, signal_config: SignalConfig, top_n: int | None 
             }
             features = extract_features(match_dict, df, btc_df)
             record_signal_outcome(
-                db_path="scanner.db",
+                db_path=os.environ.get("COIN_DB_PATH", "scanner.db"),
                 scan_result_id=None, symbol=s.symbol,
                 signal_date=today, signal_price=s.price,
                 features_json=_json.dumps(features),

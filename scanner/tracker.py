@@ -1,8 +1,9 @@
+import os
 import sqlite3
 from datetime import datetime
 
 
-DB_PATH = "scanner.db"
+DB_PATH = os.environ.get("COIN_DB_PATH", "scanner.db")
 
 
 def _get_conn() -> sqlite3.Connection:

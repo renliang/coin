@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import os
 import sqlite3
 from datetime import date, datetime, timezone
 from typing import Optional
+
+_DEFAULT_DB_PATH = os.environ.get("COIN_DB_PATH", "scanner.db")
 
 _VALID_PERIODS = {"return_3d", "return_7d", "return_14d", "return_30d"}
 
@@ -27,7 +30,7 @@ CREATE TABLE IF NOT EXISTS signal_outcomes (
 """
 
 
-def ensure_outcomes_table(db_path: str = "scanner.db") -> None:
+def ensure_outcomes_table(db_path: str = _DEFAULT_DB_PATH) -> None:
     """Create signal_outcomes table if it does not already exist."""
     with sqlite3.connect(db_path) as conn:
         conn.execute(_CREATE_TABLE_SQL)

@@ -118,7 +118,7 @@ def generate_signals(
         price = m["price"]
         score = m["score"]
         signal_type = m.get("signal_type", "")
-        is_bearish = signal_type == "顶背离"
+        is_bearish = signal_type in ("顶背离", "看空结构")
 
         atr = m.get("atr", 0)
         use_atr = atr > 0 and not math.isnan(atr)
