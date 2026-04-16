@@ -13,11 +13,11 @@ from sentiment.store import save_items, save_signal
 def client(tmp_path, monkeypatch):
     db = str(tmp_path / "test.db")
     monkeypatch.setenv("COIN_DB_PATH", db)
-    from history_ui.app import create_app
+    from api.app import create_app
+    from fastapi.testclient import TestClient
     app = create_app()
-    app.config["TESTING"] = True
-    with app.test_client() as c:
-        yield c, db
+    c = TestClient(app)
+    yield c, db
 
 
 def _make_signal(symbol: str, score: float = 0.6, direction: str = "bullish") -> SentimentSignal:
@@ -47,12 +47,12 @@ class TestSentimentLatest:
 
     def test_response_has_signals_key(self, client):
         c, _ = client
-        data = c.get("/api/sentiment/latest").get_json()
+        data = c.get("/api/sentiment/latest").json()
         assert "signals" in data
 
     def test_empty_db_returns_empty_list(self, client):
         c, _ = client
-        data = c.get("/api/sentiment/latest").get_json()
+        data = c.get("/api/sentiment/latest").json()
         assert data["signals"] == []
 
     def test_returns_latest_per_symbol(self, client):
@@ -61,7 +61,7 @@ class TestSentimentLatest:
         save_signal(_make_signal("BTC/USDT", score=0.8, direction="bullish"), db_path=db)
         save_signal(_make_signal("ETH/USDT", score=-0.5, direction="bearish"), db_path=db)
 
-        data = c.get("/api/sentiment/latest").get_json()
+        data = c.get("/api/sentiment/latest").json()
         signals = data["signals"]
         # Should return exactly one entry per symbol (2 symbols)
         symbols = [s["symbol"] for s in signals]
@@ -74,7 +74,7 @@ class TestSentimentLatest:
         save_signal(_make_signal("BTC/USDT", score=0.3, direction="neutral"), db_path=db)
         save_signal(_make_signal("BTC/USDT", score=0.8, direction="bullish"), db_path=db)
 
-        data = c.get("/api/sentiment/latest").get_json()
+        data = c.get("/api/sentiment/latest").json()
         btc = next(s for s in data["signals"] if s["symbol"] == "BTC/USDT")
         assert btc["direction"] == "bullish"
         assert btc["score"] == pytest.approx(0.8)
@@ -82,7 +82,7 @@ class TestSentimentLatest:
     def test_signal_has_expected_fields(self, client):
         c, db = client
         save_signal(_make_signal("BTC/USDT"), db_path=db)
-        data = c.get("/api/sentiment/latest").get_json()
+        data = c.get("/api/sentiment/latest").json()
         sig = data["signals"][0]
         for field in ("id", "symbol", "score", "direction", "confidence", "created_at"):
             assert field in sig
@@ -96,12 +96,12 @@ class TestSentimentHistory:
 
     def test_response_has_history_key(self, client):
         c, _ = client
-        data = c.get("/api/sentiment/history").get_json()
+        data = c.get("/api/sentiment/history").json()
         assert "history" in data
 
     def test_empty_db_returns_empty_list(self, client):
         c, _ = client
-        data = c.get("/api/sentiment/history").get_json()
+        data = c.get("/api/sentiment/history").json()
         assert data["history"] == []
 
     def test_history_entry_has_expected_fields(self, client, monkeypatch):
@@ -117,7 +117,7 @@ class TestSentimentHistory:
         conn.commit()
         conn.close()
 
-        data = c.get("/api/sentiment/history?symbol=BTC/USDT&days=7").get_json()
+        data = c.get("/api/sentiment/history?symbol=BTC/USDT&days=7").json()
         assert len(data["history"]) >= 1
         entry = data["history"][0]
         for field in ("date", "score", "direction"):
@@ -139,7 +139,7 @@ class TestSentimentHistory:
         conn.commit()
         conn.close()
 
-        data = c.get("/api/sentiment/history?symbol=BTC/USDT&days=7").get_json()
+        data = c.get("/api/sentiment/history?symbol=BTC/USDT&days=7").json()
         # All returned entries should be aggregated — since we filtered by BTC we should only get BTC data
         # (direction derived from BTC score 0.6 -> bullish)
         assert len(data["history"]) == 1
@@ -149,7 +149,7 @@ class TestSentimentHistory:
         c, _ = client
         resp = c.get("/api/sentiment/history")
         assert resp.status_code == 200
-        data = resp.get_json()
+        data = resp.json()
         assert "history" in data
 
 
@@ -161,19 +161,19 @@ class TestSentimentItems:
 
     def test_response_shape(self, client):
         c, _ = client
-        data = c.get("/api/sentiment/items").get_json()
+        data = c.get("/api/sentiment/items").json()
         for field in ("items", "total", "page", "per_page"):
             assert field in data
 
     def test_empty_db(self, client):
         c, _ = client
-        data = c.get("/api/sentiment/items").get_json()
+        data = c.get("/api/sentiment/items").json()
         assert data["items"] == []
         assert data["total"] == 0
 
     def test_pagination_defaults(self, client):
         c, _ = client
-        data = c.get("/api/sentiment/items").get_json()
+        data = c.get("/api/sentiment/items").json()
         assert data["page"] == 1
         assert data["per_page"] == 20
 
@@ -182,7 +182,7 @@ class TestSentimentItems:
         items = [_make_item("BTC/USDT") for _ in range(5)]
         save_items(items, db_path=db)
 
-        data = c.get("/api/sentiment/items?page=1&per_page=3").get_json()
+        data = c.get("/api/sentiment/items?page=1&per_page=3").json()
         assert len(data["items"]) == 3
         assert data["total"] == 5
         assert data["page"] == 1
@@ -195,7 +195,7 @@ class TestSentimentItems:
             _make_item("BTC/USDT", source="telegram"),
         ], db_path=db)
 
-        data = c.get("/api/sentiment/items?source=twitter").get_json()
+        data = c.get("/api/sentiment/items?source=twitter").json()
         assert data["total"] == 1
         assert data["items"][0]["source"] == "twitter"
 
@@ -206,7 +206,7 @@ class TestSentimentItems:
             _make_item("ETH/USDT"),
         ], db_path=db)
 
-        data = c.get("/api/sentiment/items?symbol=ETH/USDT").get_json()
+        data = c.get("/api/sentiment/items?symbol=ETH/USDT").json()
         assert data["total"] == 1
         assert data["items"][0]["symbol"] == "ETH/USDT"
 
@@ -218,13 +218,13 @@ class TestSentimentItems:
             _make_item("ETH/USDT", source="twitter"),
         ], db_path=db)
 
-        data = c.get("/api/sentiment/items?source=twitter&symbol=BTC/USDT").get_json()
+        data = c.get("/api/sentiment/items?source=twitter&symbol=BTC/USDT").json()
         assert data["total"] == 1
 
     def test_item_fields(self, client):
         c, db = client
         save_items([_make_item("BTC/USDT")], db_path=db)
-        data = c.get("/api/sentiment/items").get_json()
+        data = c.get("/api/sentiment/items").json()
         item = data["items"][0]
         for field in ("id", "source", "symbol", "score", "confidence", "raw_text", "timestamp"):
             assert field in item
@@ -234,6 +234,6 @@ class TestSentimentItems:
         items = [_make_item("BTC/USDT", score=float(i) / 10) for i in range(5)]
         save_items(items, db_path=db)
 
-        data = c.get("/api/sentiment/items?page=2&per_page=3").get_json()
+        data = c.get("/api/sentiment/items?page=2&per_page=3").json()
         assert len(data["items"]) == 2  # 5 - 3 = 2 on page 2
         assert data["page"] == 2
