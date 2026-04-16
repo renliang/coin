@@ -1,4 +1,4 @@
-"""E2E test fixtures: temp DB, seed data, Flask server, Playwright page."""
+"""E2E test fixtures: temp DB, seed data, FastAPI server, Playwright page."""
 import os
 import socket
 import subprocess
@@ -114,17 +114,17 @@ def _find_free_port() -> int:
 
 @pytest.fixture(scope="session")
 def server_url(seed_db, db_path: str):
-    """Start the history_ui Flask server and yield its base URL."""
+    """Start the FastAPI server and yield its base URL."""
     port = _find_free_port()
     url = f"http://127.0.0.1:{port}"
 
     project_root = os.path.join(os.path.dirname(__file__), "..", "..")
     project_root = os.path.abspath(project_root)
 
-    env = {**os.environ, "COIN_DB_PATH": db_path, "HISTORY_UI_PORT": str(port), "HISTORY_UI_HOST": "127.0.0.1"}
+    env = {**os.environ, "COIN_DB_PATH": db_path, "API_PORT": str(port), "API_HOST": "127.0.0.1"}
 
     proc = subprocess.Popen(
-        [sys.executable, "-m", "history_ui"],
+        [sys.executable, "-m", "api"],
         env=env,
         cwd=project_root,
         stdout=subprocess.PIPE,
@@ -146,7 +146,7 @@ def server_url(seed_db, db_path: str):
         stdout = proc.stdout.read().decode() if proc.stdout else ""
         stderr = proc.stderr.read().decode() if proc.stderr else ""
         raise RuntimeError(
-            f"Flask server failed to start on port {port}.\nstdout: {stdout}\nstderr: {stderr}"
+            f"FastAPI server failed to start on port {port}.\nstdout: {stdout}\nstderr: {stderr}"
         )
 
     yield url

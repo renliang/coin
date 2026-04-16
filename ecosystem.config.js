@@ -5,7 +5,7 @@ module.exports = {
   apps: [{
     name: "coin-scanner",
     script: ".venv/bin/python",
-    args: "main.py --serve",
+    args: "-m api",
     cwd: __dirname,
     // PM2 5.2+：把 .env 注入子进程环境；若启动报错可删掉本行，仍可依 main.py 的 load_dotenv 加载
     env_file: path.join(__dirname, ".env"),
