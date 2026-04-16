@@ -1,0 +1,18 @@
+services:
+  coin:
+    build: .
+    container_name: coin-quant
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    volumes:
+      # 持久化数据库和日志（容器重建不丢数据）
+      - ./data:/app/data
+      - ./logs:/app/logs
+      - ./results:/app/results
+    env_file:
+      - .env.prod
+    environment:
+      - COIN_DB_PATH=/app/data/scanner.db
+      - API_HOST=0.0.0.0
+      - API_PORT=8000

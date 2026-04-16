@@ -1,0 +1,21 @@
+# Production dependencies (no test/dev tools)
+python-dotenv>=1.0.0
+ccxt>=4.0.0
+requests>=2.31.0
+pandas>=2.2.0
+numpy>=1.26.0
+tabulate>=0.9.0
+pyyaml>=6.0.0
+apscheduler>=3.10.0
+fastapi>=0.115.0
+uvicorn>=0.30.0
+httpx>=0.27.0
+optuna>=3.6.0
+lightgbm>=4.3.0
+scikit-learn>=1.4.0
+vaderSentiment>=3.3.2
+feedparser>=6.0.0
+snscrape>=0.7.0
+telethon>=1.36.0
+riskfolio-lib>=6.0.0
+quantstats>=0.0.62

@@ -16,3 +16,5 @@ results/
 
 # ML 模型文件
 scanner/optimize/models/
+data/
+.env.prod
