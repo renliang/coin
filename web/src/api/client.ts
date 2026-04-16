@@ -1,6 +1,6 @@
 const BASE = "/api";
 
-async function get<T>(path: string, params?: Record<string, string | undefined>): Promise<T> {
+export async function get<T>(path: string, params?: Record<string, string | undefined>): Promise<T> {
   const url = new URL(BASE + path, window.location.origin);
   if (params) {
     for (const [k, v] of Object.entries(params)) {
@@ -12,7 +12,7 @@ async function get<T>(path: string, params?: Record<string, string | undefined>)
   return res.json() as Promise<T>;
 }
 
-async function post<T>(path: string): Promise<T> {
+export async function post<T>(path: string): Promise<T> {
   const res = await fetch(BASE + path, { method: "POST" });
   if (!res.ok) throw new Error(`API ${res.status}: ${res.statusText}`);
   return res.json() as Promise<T>;
