@@ -53,7 +53,7 @@ optimized:
   w_trend: 0.2311
   w_volume: 0.4463
 proxy:
-  https: http://127.0.0.1:7897
+  https: ""
 scanner:
   drop_max: 0.15
   drop_min: 0.05

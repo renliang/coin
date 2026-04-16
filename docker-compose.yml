@@ -10,6 +10,7 @@ services:
       - ./data:/app/data
       - ./logs:/app/logs
       - ./results:/app/results
+      - ./config.yaml:/app/config.yaml:ro
     env_file:
       - .env.prod
     environment:
@@ -26,6 +27,7 @@ services:
       - ./data:/app/data
       - ./logs:/app/logs
       - ./results:/app/results
+      - ./config.yaml:/app/config.yaml:ro
     env_file:
       - .env.prod
     environment:
