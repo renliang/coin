@@ -1,0 +1,24 @@
+@import "tailwindcss";
+
+@theme {
+  --color-bg: #0f172a;
+  --color-card: #1e293b;
+  --color-card-hover: #263548;
+  --color-border: #334155;
+  --color-profit: #10b981;
+  --color-loss: #ef4444;
+  --color-mode-accum: #3b82f6;
+  --color-mode-div: #8b5cf6;
+  --color-mode-break: #f97316;
+  --font-mono: "JetBrains Mono", "Fira Code", ui-monospace, monospace;
+}
+
+body {
+  font-family:
+    -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+}
+
+/* 数字使用等宽字体 */
+.font-mono {
+  font-family: var(--font-mono);
+}

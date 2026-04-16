@@ -18,6 +18,23 @@ class BreakoutResult:
     reattack_close: float = 0.0
     days_since_spike: int = 0
     score: float = 0.0
+    # 评分分项
+    spike_score: float = 0.0
+    shrink_score: float = 0.0
+    reattack_score: float = 0.0
+    position_score: float = 0.0
+
+    def score_breakdown_dict(self) -> dict:
+        return {
+            "mode": "breakout",
+            "components": [
+                {"name": "天量强度", "score": self.spike_score, "weight": 0.3},
+                {"name": "缩量程度", "score": self.shrink_score, "weight": 0.2},
+                {"name": "二攻力度", "score": self.reattack_score, "weight": 0.3},
+                {"name": "价格位置", "score": self.position_score, "weight": 0.2},
+            ],
+            "total": self.score,
+        }
 
 
 def detect_breakout(
@@ -103,7 +120,9 @@ def detect_breakout(
     reattack_close = float(closes[reattack_idx])
     spike_high = float(highs[spike_idx])
 
-    score = _score_breakout(spike_vol_ratio, pullback_shrink, reattack_vol_ratio, reattack_close, spike_high)
+    total, s_spike, s_shrink, s_reattack, s_position = _score_breakout(
+        spike_vol_ratio, pullback_shrink, reattack_vol_ratio, reattack_close, spike_high,
+    )
 
     return BreakoutResult(
         matched=True,
@@ -116,7 +135,11 @@ def detect_breakout(
         reattack_volume_ratio=round(reattack_vol_ratio, 1),
         reattack_close=round(reattack_close, 6),
         days_since_spike=int(reattack_idx - spike_idx),
-        score=round(score, 4),
+        score=round(total, 4),
+        spike_score=round(s_spike, 4),
+        shrink_score=round(s_shrink, 4),
+        reattack_score=round(s_reattack, 4),
+        position_score=round(s_position, 4),
     )
 
 
@@ -126,10 +149,11 @@ def _score_breakout(
     reattack_vol_ratio: float,
     reattack_close: float,
     spike_high: float,
-) -> float:
-    """计算天量回踩二攻评分 [0, 1]。"""
+) -> tuple[float, float, float, float, float]:
+    """计算天量回踩二攻评分 [0, 1]，返回 (total, spike, shrink, reattack, position)。"""
     spike_score = min(1.0, math.log(spike_vol_ratio / 5.0 + 1) / math.log(11))
     shrink_score = max(0.0, 1.0 - pullback_shrink / 0.5)
     reattack_score = min(1.0, math.log(reattack_vol_ratio / 2.0 + 1) / math.log(6))
     position_score = min(1.0, reattack_close / spike_high) if spike_high > 0 else 0.0
-    return spike_score * 0.3 + shrink_score * 0.2 + reattack_score * 0.3 + position_score * 0.2
+    total = spike_score * 0.3 + shrink_score * 0.2 + reattack_score * 0.3 + position_score * 0.2
+    return total, spike_score, shrink_score, reattack_score, position_score

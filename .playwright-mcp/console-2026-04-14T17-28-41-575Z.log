@@ -1,0 +1,3 @@
+[     338ms] [INFO] %cDownload the React DevTools for a better development experience: https://react.dev/link/react-devtools font-weight:bold @ http://localhost:5173/app/node_modules/.vite/deps/react-dom_client.js?v=7cf89626:20100
+[  487990ms] [INFO] %cDownload the React DevTools for a better development experience: https://react.dev/link/react-devtools font-weight:bold @ http://localhost:5173/app/node_modules/.vite/deps/react-dom_client.js?v=7cf89626:20100
+[  494260ms] [ERROR] Failed to load resource: the server responded with a status of 404 (Not Found) @ http://localhost:5173/app:0

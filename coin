@@ -1,0 +1,26 @@
+#!/usr/bin/env python3
+"""coin CLI — 子命令入口。
+
+用法:
+    coin scan --mode divergence
+    coin backtest --days 180
+    coin track
+    coin history ZIL/USDT
+    coin serve
+    coin stats
+    coin optimize run
+    coin optimize report
+    coin retrain
+"""
+import sys
+import os
+
+# 确保项目根目录在 sys.path 中
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+from dotenv import load_dotenv
+load_dotenv()
+
+from cli import main
+
+main()

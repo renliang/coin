@@ -15,7 +15,7 @@ from tabulate import tabulate
 from scanner.coingecko import fetch_market_caps, set_proxy as set_coingecko_proxy
 from scanner.kline import fetch_klines_batch, fetch_futures_symbols, set_proxy as set_kline_proxy
 from scanner.detector import detect_pattern
-from scanner.scorer import score_result, rank_results
+from scanner.scorer import score_result, score_result_detailed, rank_results
 from scanner.tracker import save_scan, get_tracked_symbols, get_history, get_closed_trades
 from scanner.signal import SignalConfig, TradeSignal, generate_signals, calculate_atr
 from scanner.confirmation import confirm_signal
@@ -63,7 +63,7 @@ class ScheduleConfig:
 
 def load_config(
     path: str = "config.yaml",
-) -> tuple[dict, SignalConfig, TradingConfig, ScheduleConfig]:
+) -> tuple[dict, SignalConfig, TradingConfig, ScheduleConfig, dict, dict]:
     with open(path) as f:
         raw = yaml.safe_load(f)
     proxy = (raw.get("proxy") or {}).get("https", "")
@@ -113,7 +113,23 @@ def load_config(
         monitor_interval=s.get("monitor_interval", 60),
     )
 
-    return scanner_cfg, signal_config, trading_config, schedule_config
+    # sentiment config
+    sentiment_cfg = dict(raw.get("sentiment", {}))
+    if "enabled" not in sentiment_cfg:
+        sentiment_cfg["enabled"] = False
+    if "weights" not in sentiment_cfg:
+        sentiment_cfg["weights"] = {"twitter": 0.3, "telegram": 0.2, "news": 0.3, "onchain": 0.2}
+    if "boost_range" not in sentiment_cfg:
+        sentiment_cfg["boost_range"] = 0.2
+
+    # portfolio config
+    portfolio_cfg = dict(raw.get("portfolio", {}))
+    if "enabled" not in portfolio_cfg:
+        portfolio_cfg["enabled"] = False
+
+    scanner_cfg["_sentiment_config"] = sentiment_cfg
+
+    return scanner_cfg, signal_config, trading_config, schedule_config, sentiment_cfg, portfolio_cfg
 
 
 def run(config: dict, signal_config: SignalConfig, top_n: int | None = None, symbols_override: list[str] | None = None):
@@ -153,7 +169,7 @@ def run(config: dict, signal_config: SignalConfig, top_n: int | None = None, sym
         )
         if not detection.matched:
             continue
-        score = score_result(
+        breakdown = score_result_detailed(
             detection,
             drop_min=config.get("drop_min", 0.05),
             drop_max=config.get("drop_max", 0.15),
@@ -168,10 +184,11 @@ def run(config: dict, signal_config: SignalConfig, top_n: int | None = None, sym
             "drop_pct": detection.drop_pct,
             "volume_ratio": detection.volume_ratio,
             "window_days": detection.window_days,
-            "score": score,
+            "score": breakdown.total,
             "atr": atr,
             "r_squared": detection.r_squared,
             "max_daily_pct": detection.max_daily_pct,
+            "score_breakdown": breakdown.to_dict(),
         })
 
     print(f"       形态命中 {len(matches)} 个")
@@ -233,6 +250,27 @@ def run(config: dict, signal_config: SignalConfig, top_n: int | None = None, sym
     if not signals:
         print("\n没有达到信号门槛的币种。")
         return
+
+    # 舆情评分加成
+    sentiment_config = config.get("_sentiment_config", {})
+    if sentiment_config.get("enabled"):
+        from sentiment.store import query_latest_signal
+        from sentiment.aggregator import compute_boost
+        from sentiment.models import SentimentSignal
+        from dataclasses import replace as dc_replace
+        boost_range = sentiment_config.get("boost_range", 0.2)
+        boosted = []
+        for sig in signals:
+            latest = query_latest_signal(sig.symbol)
+            if latest:
+                sent_sig = SentimentSignal(symbol=latest.symbol, score=latest.score,
+                    direction=latest.direction, confidence=latest.confidence)
+                boost = compute_boost(sent_sig, boost_range)
+                new_score = max(0.0, min(1.0, sig.score * (1 + boost)))
+                boosted.append(dc_replace(sig, score=new_score))
+            else:
+                boosted.append(sig)
+        signals = boosted
 
     # 保存到数据库（存信号，含点位）
     scan_id = save_scan(signals)
@@ -365,6 +403,7 @@ def run_divergence(config: dict, signal_config: SignalConfig, top_n: int | None 
             "signal_type": signal_type,
             "mode": "divergence",
             "atr": atr,
+            "score_breakdown": result.score_breakdown_dict(),
         })
 
     print(f"       背离命中 {len(matches)} 个")
@@ -427,6 +466,27 @@ def run_divergence(config: dict, signal_config: SignalConfig, top_n: int | None 
     if not signals:
         print("\n没有达到信号门槛的币种。")
         return []
+
+    # 舆情评分加成
+    sentiment_config = config.get("_sentiment_config", {})
+    if sentiment_config.get("enabled"):
+        from sentiment.store import query_latest_signal
+        from sentiment.aggregator import compute_boost
+        from sentiment.models import SentimentSignal
+        from dataclasses import replace as dc_replace
+        boost_range = sentiment_config.get("boost_range", 0.2)
+        boosted = []
+        for sig in signals:
+            latest = query_latest_signal(sig.symbol)
+            if latest:
+                sent_sig = SentimentSignal(symbol=latest.symbol, score=latest.score,
+                    direction=latest.direction, confidence=latest.confidence)
+                boost = compute_boost(sent_sig, boost_range)
+                new_score = max(0.0, min(1.0, sig.score * (1 + boost)))
+                boosted.append(dc_replace(sig, score=new_score))
+            else:
+                boosted.append(sig)
+        signals = boosted
 
     # 保存到数据库（存信号，含点位）
     scan_id = save_scan(signals, mode="divergence")
@@ -565,6 +625,7 @@ def run_breakout(config: dict, signal_config: SignalConfig, top_n: int | None = 
             "pullback_low": result.pullback_low,
             "spike_high": result.spike_high,
             "atr": atr,
+            "score_breakdown": result.score_breakdown_dict(),
         })
 
     print(f"       命中 {len(matches)} 个")
@@ -931,6 +992,8 @@ def run_serve(
     signal_config: SignalConfig,
     trading_config: TradingConfig,
     schedule_config: ScheduleConfig,
+    sentiment_config: dict | None = None,
+    portfolio_config: dict | None = None,
 ) -> None:
     """常驻模式：APScheduler 定时扫描 + 自动下单 + 订单监控。"""
     import logging
@@ -1008,6 +1071,34 @@ def run_serve(
             id="order_monitor",
         )
         logger.info("订单监控已注册: 每 %d 秒", schedule_config.monitor_interval)
+
+    # 信号生命周期刷新任务（每 5 分钟）
+    def scheduled_lifecycle():
+        try:
+            from scanner.lifecycle import refresh_signal_prices, check_lifecycle_transitions, expire_stale_signals
+            from scanner.kline import fetch_ticker_price
+            updated = refresh_signal_prices(fetch_ticker_price)
+            transitions = check_lifecycle_transitions()
+            expired = expire_stale_signals(hold_days=signal_config.hold_days)
+            if updated or any(transitions.values()) or expired:
+                logger.info("[lifecycle] 刷新 %d 个, 转换 %s, 过期 %d 个", updated, transitions, expired)
+        except Exception as e:
+            logger.error("lifecycle 刷新异常: %s", e)
+
+    scheduler.add_job(scheduled_lifecycle, "interval", minutes=5, id="lifecycle_refresh")
+    logger.info("信号生命周期刷新已注册: 每 5 分钟")
+
+    if sentiment_config and sentiment_config.get("enabled"):
+        interval = sentiment_config.get("news", {}).get("interval_minutes", 15)
+        scheduler.add_job(run_sentiment_scan, "interval", minutes=interval,
+            args=[sentiment_config], id="sentiment_scan")
+        logger.info("舆情采集已注册: 每 %d 分钟", interval)
+
+    if portfolio_config and portfolio_config.get("enabled"):
+        scheduler.add_job(run_portfolio_rebalance, "cron",
+            day_of_week="mon", hour=8, minute=0,
+            args=[portfolio_config], id="portfolio_rebalance")
+        logger.info("组合再平衡已注册: 每周一 08:00")
 
     print(f"[serve] 常驻模式启动 — 扫描时间: {schedule_config.scan_time}, 交易: {'开启' if trading_config.enabled else '关闭'}")
     print("[serve] 按 Ctrl+C 退出")
@@ -1176,108 +1267,277 @@ def run_optimize_report_cli() -> None:
         print(f"  特征数量:   {len(model_info.feature_names)}")
 
 
-def main():
-    parser = argparse.ArgumentParser(description="币种形态筛选器")
-    parser.add_argument(
-        "--mode",
-        choices=["accumulation", "divergence", "breakout"],
-        default="divergence",
-        help="扫描模式: divergence=MACD背离(默认), accumulation=底部蓄力, breakout=天量回踩",
-    )
-    parser.add_argument("--top", type=int, help="输出前N个结果")
-    parser.add_argument("--config", default="config.yaml", help="配置文件路径")
-    parser.add_argument("--symbols", nargs="+", help="直接指定交易对")
-    parser.add_argument("--track", action="store_true", help="查看所有跟踪中的币种")
-    parser.add_argument("--history", type=str, help="查看某币种历史记录，如 ZIL/USDT")
-    parser.add_argument("--backtest", action="store_true", help="运行回测验证形态有效性")
-    parser.add_argument(
-        "--verify-signal",
-        action="store_true",
-        help="与 --backtest 联用：按检测日中位数分段，对比 signal 门槛下收益",
-    )
-    parser.add_argument(
-        "--sensitivity",
-        action="store_true",
-        help="与 --backtest 联用：对 key scanner 参数输出命中数敏感性表",
-    )
-    parser.add_argument("--days", type=int, default=180, help="回测历史K线天数（默认180）")
-    parser.add_argument(
-        "--no-confirm",
-        action="store_true",
-        help="关闭信号确认层（多指标共振过滤）",
-    )
-    parser.add_argument(
-        "--serve",
-        action="store_true",
-        help="常驻模式：APScheduler 定时扫描 + 自动下单 + 订单监控",
-    )
-    parser.add_argument(
-        "--stats",
-        action="store_true",
-        help="查看信号成功率统计（按模式/评分/月份）",
-    )
-    parser.add_argument(
-        "--json-only",
-        action="store_true",
-        help="与 --stats 联用：仅导出 JSON，不打印表格",
-    )
-    parser.add_argument(
-        "--optimize",
-        action="store_true",
-        help="运行 Optuna 参数优化（需先有回测数据）",
-    )
-    parser.add_argument(
-        "--retrain",
-        action="store_true",
-        help="收集信号反馈 + 重训练 ML 模型",
-    )
-    parser.add_argument(
-        "--optimize-report",
-        action="store_true",
-        help="查看当前最优参数和模型表现",
-    )
-    args = parser.parse_args()
+def run_sentiment_scan(sentiment_config: dict, symbols_override: list[str] | None = None) -> None:
+    """采集舆情数据并生成情绪信号。"""
+    if not sentiment_config.get("enabled"):
+        print("[sentiment] 舆情功能未启用（sentiment.enabled=false）")
+        return
 
-    config, signal_config, trading_config, schedule_config = load_config(args.config)
+    from sentiment.sources.news import CryptoPanicSource, RSSSource
+    from sentiment.analyzer import analyze_text, analyze_onchain
+    from sentiment.store import save_items, save_signal
+    from sentiment.aggregator import aggregate
 
-    if args.no_confirm:
-        signal_config = replace(signal_config, confirmation=False)
+    items = []
+
+    # CryptoPanic
+    news_cfg = sentiment_config.get("news", {})
+    api_key_env = news_cfg.get("cryptopanic_api_key_env", "CRYPTOPANIC_API_KEY")
+    api_key = os.environ.get(api_key_env, "")
+    if api_key:
+        try:
+            src = CryptoPanicSource(api_key=api_key)
+            fetched = src.fetch(symbols=symbols_override)
+            items.extend(fetched)
+            print(f"[sentiment] CryptoPanic 获取 {len(fetched)} 条")
+        except Exception as e:
+            print(f"[sentiment] CryptoPanic 获取失败: {e}")
+    else:
+        print(f"[sentiment] 未配置 {api_key_env}，跳过 CryptoPanic")
+
+    # RSS
+    try:
+        rss_src = RSSSource()
+        rss_items = rss_src.fetch(symbols=symbols_override)
+        items.extend(rss_items)
+        print(f"[sentiment] RSS 获取 {len(rss_items)} 条")
+    except Exception as e:
+        print(f"[sentiment] RSS 获取失败: {e}")
+
+    if not items:
+        print("[sentiment] 无可用舆情数据")
+        return
+
+    # 分析原始文本 items（无 score 的需 analyze_text）
+    analyzed = []
+    for item in items:
+        if item.score == 0.0:
+            analyzed_item = analyze_text(item.raw_text, item.source, item.symbol)
+            if analyzed_item:
+                analyzed.append(analyzed_item)
+        else:
+            analyzed.append(item)
+
+    # 保存 items
+    save_items(analyzed)
+    print(f"[sentiment] 已保存 {len(analyzed)} 条舆情数据")
+
+    # 聚合信号
+    weights = sentiment_config.get("weights", {"twitter": 0.3, "telegram": 0.2, "news": 0.3, "onchain": 0.2})
+    signals = aggregate(analyzed, weights)
+    for sig in signals:
+        save_signal(sig)
+
+    # 输出汇总
+    table_data = [[s.symbol, f"{s.score:.3f}", s.direction, f"{s.confidence:.2f}"] for s in signals]
+    headers = ["Symbol", "Score", "Direction", "Confidence"]
+    print(f"\n[sentiment] 生成 {len(signals)} 个情绪信号:\n")
+    print(tabulate(table_data, headers=headers, tablefmt="simple"))
+
+
+def run_sentiment_status() -> None:
+    """查看最新情绪信号状态。"""
+    from sentiment.store import query_latest_signal
+
+    symbols = ["BTC/USDT", "ETH/USDT", "SOL/USDT", ""]
+    table_data = []
+    for sym in symbols:
+        sig = query_latest_signal(sym)
+        if sig:
+            table_data.append([
+                sig.symbol or "(global)",
+                f"{sig.score:.3f}",
+                sig.direction,
+                f"{sig.confidence:.2f}",
+            ])
+        else:
+            table_data.append([sym or "(global)", "-", "-", "-"])
+
+    headers = ["Symbol", "Score", "Direction", "Confidence"]
+    print("\n[sentiment] 最新情绪信号:\n")
+    print(tabulate(table_data, headers=headers, tablefmt="simple"))
+
+
+def run_portfolio_status(portfolio_config: dict) -> None:
+    """查看组合最新状态：权重 + NAV。"""
+    from portfolio.store import query_latest_weights, query_nav_history
+
+    weights = query_latest_weights()
+    nav_history = query_nav_history(limit=1)
+    nav = nav_history[0]["nav"] if nav_history else None
+
+    if not weights:
+        print("[portfolio] 暂无组合权重数据，请先运行 portfolio rebalance")
+        return
+
+    table_data = [[sid, f"{w:.4f}"] for sid, w in sorted(weights.items())]
+    headers = ["Strategy", "Weight"]
+    nav_str = f"{nav:.4f}" if nav is not None else "N/A"
+    print(f"\n[portfolio] 组合权重 (NAV={nav_str}):\n")
+    print(tabulate(table_data, headers=headers, tablefmt="simple"))
+
+
+def run_portfolio_rebalance(portfolio_config: dict) -> None:
+    """重新计算组合权重并保存。"""
+    if not portfolio_config.get("enabled"):
+        print("[portfolio] 组合管理未启用（portfolio.enabled=false）")
+        return
+
+    from scanner.tracker import get_closed_trades
+    from portfolio.tracker import compute_strategy_stats
+    from portfolio.allocator import optimize_weights
+    from portfolio.models import StrategyResult
+    from portfolio.store import save_weights
+
+    trades = get_closed_trades()
+    if not trades:
+        print("[portfolio] 暂无已关仓交易数据，无法计算权重")
+        return
+
+    # 按模式分组计算日收益
+    returns_by_mode: dict[str, list[float]] = {}
+    for t in trades:
+        mode = t.get("mode", "accumulation") or "accumulation"
+        ret = t.get("return_pct", 0.0) or 0.0
+        returns_by_mode.setdefault(mode, []).append(ret)
+
+    strategies = []
+    for mode, rets in returns_by_mode.items():
+        stats = compute_strategy_stats(mode, rets)
+        strategies.append(StrategyResult(
+            strategy_id=mode,
+            sharpe=stats["sharpe"],
+            win_rate=stats["win_rate"],
+            max_drawdown=stats["max_drawdown"],
+            daily_returns=rets,
+        ))
+
+    max_weight = portfolio_config.get("max_strategy_weight", 0.5)
+    min_weight = portfolio_config.get("min_strategy_weight", 0.05)
+    weights = optimize_weights(strategies, max_weight=max_weight, min_weight=min_weight)
+
+    if not weights:
+        print("[portfolio] 权重优化失败，无可用数据")
+        return
+
+    save_weights(weights)
+    table_data = [[sid, f"{w:.4f}"] for sid, w in sorted(weights.items())]
+    headers = ["Strategy", "Weight"]
+    print("\n[portfolio] 组合再平衡完成:\n")
+    print(tabulate(table_data, headers=headers, tablefmt="simple"))
+
+
+def run_portfolio_report(portfolio_config: dict) -> None:
+    """生成组合绩效 HTML 报告。"""
+    from scanner.tracker import get_closed_trades
+    from portfolio.tracker import generate_portfolio_report
+    from portfolio.store import query_latest_weights
+
+    trades = get_closed_trades()
+    if not trades:
+        print("[portfolio] 暂无已关仓交易数据")
+        return
+
+    returns_by_mode: dict[str, list[float]] = {}
+    for t in trades:
+        mode = t.get("mode", "accumulation") or "accumulation"
+        ret = t.get("return_pct", 0.0) or 0.0
+        returns_by_mode.setdefault(mode, []).append(ret)
+
+    weights = query_latest_weights()
+    if not weights:
+        # 等权回退
+        n = len(returns_by_mode)
+        weights = {k: 1.0 / n for k in returns_by_mode} if n > 0 else {}
+
+    os.makedirs("results", exist_ok=True)
+    ts = datetime.now().strftime("%Y-%m-%d_%H%M%S")
+    output_path = f"results/portfolio_report_{ts}.html"
+    generate_portfolio_report(returns_by_mode, weights, output_path)
+    print(f"[portfolio] 绩效报告已生成: {output_path}")
+
+
+def _build_legacy_argv(args: argparse.Namespace) -> list[str]:
+    """将旧 flag 风格参数转换为新子命令 argv。"""
+    argv = ["--config", args.config]
 
     if args.optimize:
-        run_optimize_cli(config, signal_config, days=args.days, symbols_override=args.symbols)
-        return
+        argv += ["optimize", "run", "--days", str(args.days)]
+        if args.symbols:
+            argv += ["--symbols"] + args.symbols
+        return argv
     if args.retrain:
-        run_retrain_cli()
-        return
+        return argv + ["retrain"]
     if args.optimize_report:
-        run_optimize_report_cli()
+        return argv + ["optimize", "report"]
+    if args.serve:
+        return argv + ["serve"]
+    if args.stats:
+        cmd = argv + ["stats"]
+        if args.json_only:
+            cmd.append("--json-only")
+        return cmd
+    if args.track:
+        return argv + ["track"]
+    if args.history:
+        return argv + ["history", args.history]
+    if args.backtest:
+        cmd = argv + ["backtest", "--days", str(args.days)]
+        if args.symbols:
+            cmd += ["--symbols"] + args.symbols
+        if args.verify_signal:
+            cmd.append("--verify-signal")
+        if args.sensitivity:
+            cmd.append("--sensitivity")
+        return cmd
+
+    # scan mode (default)
+    cmd = argv + ["scan", "--mode", args.mode]
+    if args.top:
+        cmd += ["--top", str(args.top)]
+    if args.symbols:
+        cmd += ["--symbols"] + args.symbols
+    if args.no_confirm:
+        cmd.append("--no-confirm")
+    return cmd
+
+
+def main():
+    import sys
+
+    # 检测是否使用了新子命令格式
+    known_subcommands = {"scan", "backtest", "track", "history", "serve", "stats", "optimize", "retrain", "sentiment", "portfolio"}
+    if len(sys.argv) > 1 and sys.argv[1] in known_subcommands:
+        from cli import main as cli_main
+        cli_main(sys.argv[1:])
         return
 
-    if args.serve:
-        run_serve(config, signal_config, trading_config, schedule_config)
-    elif args.stats:
-        run_stats(json_only=args.json_only)
-    elif args.track:
-        show_tracking()
-    elif args.history:
-        show_history(args.history)
-    elif args.backtest:
-        run_backtest_cli(
-            config,
-            signal_config,
-            days=args.days,
-            symbols_override=args.symbols,
-            verify_signal=args.verify_signal,
-            run_sensitivity=args.sensitivity,
-        )
-    elif args.mode == "breakout":
-        run_breakout(config, signal_config, top_n=args.top, symbols_override=args.symbols)
-    elif args.mode == "divergence":
-        signals = run_divergence(config, signal_config, top_n=args.top, symbols_override=args.symbols)
-        if signals and trading_config.enabled:
-            execute_trading_pipeline(signals, trading_config)
-    else:
-        run(config, signal_config, top_n=args.top, symbols_override=args.symbols)
+    # 兼容旧 flag 格式 — 解析后转换为新子命令
+    parser = argparse.ArgumentParser(description="币种形态筛选器（旧命令格式，建议使用子命令：coin scan / coin backtest / ...）")
+    parser.add_argument("--mode", choices=["accumulation", "divergence", "breakout"], default="divergence")
+    parser.add_argument("--top", type=int)
+    parser.add_argument("--config", default="config.yaml")
+    parser.add_argument("--symbols", nargs="+")
+    parser.add_argument("--track", action="store_true")
+    parser.add_argument("--history", type=str)
+    parser.add_argument("--backtest", action="store_true")
+    parser.add_argument("--verify-signal", action="store_true")
+    parser.add_argument("--sensitivity", action="store_true")
+    parser.add_argument("--days", type=int, default=180)
+    parser.add_argument("--no-confirm", action="store_true")
+    parser.add_argument("--serve", action="store_true")
+    parser.add_argument("--stats", action="store_true")
+    parser.add_argument("--json-only", action="store_true")
+    parser.add_argument("--optimize", action="store_true")
+    parser.add_argument("--retrain", action="store_true")
+    parser.add_argument("--optimize-report", action="store_true")
+    args = parser.parse_args()
+
+    new_argv = _build_legacy_argv(args)
+    print(f"[提示] 旧命令格式仍可用，推荐使用: python main.py {' '.join(new_argv[2:])}")
+
+    from cli import main as cli_main
+    cli_main(new_argv)
 
 
 if __name__ == "__main__":

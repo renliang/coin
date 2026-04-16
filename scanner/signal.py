@@ -52,6 +52,7 @@ class TradeSignal:
     sl_capped: bool = False
     market_cap_m: float = 0.0
     entry_method: str = ""  # "support_resistance" | "score_discount"
+    score_breakdown: dict | None = None
 
 
 def _entry_discount(score: float) -> float:
@@ -144,6 +145,7 @@ def generate_signals(
                     sl_capped=sl_capped,
                     market_cap_m=m.get("market_cap_m", 0.0),
                     entry_method="support_resistance",
+                    score_breakdown=m.get("score_breakdown"),
                 ))
                 continue
 
@@ -189,5 +191,6 @@ def generate_signals(
             sl_capped=sl_capped,
             market_cap_m=m.get("market_cap_m", 0.0),
             entry_method="score_discount",
+            score_breakdown=m.get("score_breakdown"),
         ))
     return signals

@@ -14,6 +14,21 @@ class DivergenceResult:
     dif_2: float            # 第二个极值点DIF值
     pivot_distance: int     # 两极值点间距（K线根数）
     score: float            # 综合评分 [0, 1]
+    # 评分分项（可选，detect_divergence 会填充）
+    strength_score: float = 0.0
+    confirm_score: float = 0.0
+    time_score: float = 0.0
+
+    def score_breakdown_dict(self) -> dict:
+        return {
+            "mode": "divergence",
+            "components": [
+                {"name": "背离强度", "score": self.strength_score, "weight": 0.5},
+                {"name": "MACD确认", "score": self.confirm_score, "weight": 0.3},
+                {"name": "时间合理", "score": self.time_score, "weight": 0.2},
+            ],
+            "total": self.score,
+        }
 
 
 def compute_macd(
@@ -40,13 +55,13 @@ def _score_divergence(
     idx_1: int,
     idx_2: int,
     div_type: str,
-) -> float:
-    """计算背离评分 [0, 1]。
+) -> tuple[float, float, float, float]:
+    """计算背离评分 [0, 1]，返回 (total, strength, confirm, time_score)。
 
     三个维度:
-    - 背离强度 (权重0.4): 价格差与DIF差的偏离程度
+    - 背离强度 (权重0.5): 价格差与DIF差的偏离程度
     - MACD柱确认 (权重0.3): 第二极值点附近柱状图是否收缩
-    - 时间合理性 (权重0.3): 间距越接近30天越好
+    - 时间合理性 (权重0.2): 间距越接近30天越好
     """
     # 1. 背离强度: 价格变化率与DIF变化率方向相反的程度
     price_change = abs(price_2 - price_1) / abs(price_1) if price_1 != 0 else 0
@@ -59,11 +74,9 @@ def _score_divergence(
     end = min(len(hist), idx_2 + window + 1)
     hist_slice = hist.iloc[start:end].values
     if div_type == "bullish":
-        # 底背离: 柱值应从负回升(值变大)
         hist_trend = np.mean(np.diff(hist_slice)) if len(hist_slice) > 1 else 0
         confirm = min(1.0, max(0.0, hist_trend / (abs(hist.iloc[idx_1]) + 1e-10) * 10))
     else:
-        # 顶背离: 柱值应从正回落(值变小)
         hist_trend = np.mean(np.diff(hist_slice)) if len(hist_slice) > 1 else 0
         confirm = min(1.0, max(0.0, -hist_trend / (abs(hist.iloc[idx_1]) + 1e-10) * 10))
 
@@ -71,7 +84,8 @@ def _score_divergence(
     distance = idx_2 - idx_1
     time_score = max(0.0, 1.0 - abs(distance - 30) / 30)
 
-    return strength * 0.5 + confirm * 0.3 + time_score * 0.2
+    total = strength * 0.5 + confirm * 0.3 + time_score * 0.2
+    return total, strength, confirm, time_score
 
 
 def detect_divergence(
@@ -121,14 +135,17 @@ def detect_divergence(
             d1, d2 = float(dif.iloc[idx1]), float(dif.iloc[idx2])
             # 底背离: 价格创新低（差距≥min_price_diff），DIF未创新低
             if p2 < p1 and d2 > d1 and (p1 - p2) / p1 >= min_price_diff:
-                score = _score_divergence(p1, p2, d1, d2, hist, idx1, idx2, "bullish")
-                if score > best_result.score:
+                total, s_str, s_conf, s_time = _score_divergence(p1, p2, d1, d2, hist, idx1, idx2, "bullish")
+                if total > best_result.score:
                     best_result = DivergenceResult(
                         divergence_type="bullish",
                         price_1=p1, price_2=p2,
                         dif_1=d1, dif_2=d2,
                         pivot_distance=dist,
-                        score=score,
+                        score=total,
+                        strength_score=s_str,
+                        confirm_score=s_conf,
+                        time_score=s_time,
                     )
 
     # 检查顶背离: 遍历波峰对
@@ -142,14 +159,17 @@ def detect_divergence(
             d1, d2 = float(dif.iloc[idx1]), float(dif.iloc[idx2])
             # 顶背离: 价格创新高（差距≥min_price_diff），DIF未创新高
             if p2 > p1 and d2 < d1 and (p2 - p1) / p1 >= min_price_diff:
-                score = _score_divergence(p1, p2, d1, d2, hist, idx1, idx2, "bearish")
-                if score > best_result.score:
+                total, s_str, s_conf, s_time = _score_divergence(p1, p2, d1, d2, hist, idx1, idx2, "bearish")
+                if total > best_result.score:
                     best_result = DivergenceResult(
                         divergence_type="bearish",
                         price_1=p1, price_2=p2,
                         dif_1=d1, dif_2=d2,
                         pivot_distance=dist,
-                        score=score,
+                        score=total,
+                        strength_score=s_str,
+                        confirm_score=s_conf,
+                        time_score=s_time,
                     )
 
     return best_result

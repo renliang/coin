@@ -2,7 +2,8 @@ import os
 import threading
 import time
 
-from flask import Flask, jsonify, redirect, render_template, request, url_for
+from flask import Flask, jsonify, redirect, render_template, request, send_from_directory, url_for
+from flask_cors import CORS
 
 from scanner.tracker import (
     get_closed_trades_by_symbol,
@@ -15,6 +16,9 @@ from scanner.tracker import (
 _scan_lock = threading.Lock()
 _scan_state: dict = {"running": False, "started_at": None, "finished_at": None, "error": None}
 
+# React SPA 构建产物目录
+_SPA_DIR = os.path.join(os.path.dirname(__file__), "..", "web", "dist")
+
 
 def create_app() -> Flask:
     app = Flask(
@@ -22,6 +26,11 @@ def create_app() -> Flask:
         template_folder="templates",
         static_folder="static",
     )
+    CORS(app, resources={r"/api/*": {"origins": "*"}})
+
+    # 注册 API Blueprint
+    from history_ui.api import api_bp
+    app.register_blueprint(api_bp)
 
     @app.route("/")
     def index():
@@ -126,6 +135,17 @@ def create_app() -> Flask:
             scans=scans,
             trades=trades,
         )
+
+    # ── React SPA 静态文件托管 ──
+    @app.route("/app/")
+    @app.route("/app/<path:path>")
+    def spa(path: str = ""):
+        if path and os.path.isfile(os.path.join(_SPA_DIR, path)):
+            return send_from_directory(_SPA_DIR, path)
+        index = os.path.join(_SPA_DIR, "index.html")
+        if os.path.isfile(index):
+            return send_from_directory(_SPA_DIR, "index.html")
+        return "React SPA not built. Run: cd web && npm run build", 404
 
     return app
 

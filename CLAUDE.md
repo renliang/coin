@@ -5,13 +5,22 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## Commands
 
 ```bash
-# Run (requires proxy for Binance API access from China)
-.venv/bin/python main.py                          # accumulation mode (default)
-.venv/bin/python main.py --mode divergence         # MACD divergence mode
-.venv/bin/python main.py --mode new                # new coin observation
-.venv/bin/python main.py --backtest --days 180     # backtest with 180d history
-.venv/bin/python main.py --track                   # show tracked symbols
-.venv/bin/python main.py --history ZIL/USDT        # single symbol history
+# Run — subcommand style (requires proxy for Binance API access from China)
+.venv/bin/python main.py scan                      # divergence mode (default)
+.venv/bin/python main.py scan --mode accumulation   # accumulation mode
+.venv/bin/python main.py scan --mode breakout       # breakout mode
+.venv/bin/python main.py backtest --days 180        # backtest with 180d history
+.venv/bin/python main.py track                      # show tracked symbols
+.venv/bin/python main.py history ZIL/USDT           # single symbol history
+.venv/bin/python main.py serve                      # daemon mode with scheduler
+.venv/bin/python main.py stats                      # performance stats
+.venv/bin/python main.py optimize run               # Optuna param optimization
+.venv/bin/python main.py optimize report            # view optimized params
+.venv/bin/python main.py retrain                    # retrain ML model
+
+# Legacy flag style still works (with deprecation notice):
+.venv/bin/python main.py --mode divergence          # → scan --mode divergence
+.venv/bin/python main.py --backtest --days 180      # → backtest --days 180
 
 # Scan history web UI (read-only browser for scanner.db scan_results)
 .venv/bin/python -m history_ui                     # http://127.0.0.1:5050  (HISTORY_UI_HOST / HISTORY_UI_PORT)

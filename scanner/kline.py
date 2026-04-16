@@ -116,3 +116,13 @@ def fetch_klines_batch(symbols: list[str], days: int = 30, delay: float = 0.5) -
             results[symbol] = df
         time.sleep(delay)
     return results
+
+
+def fetch_ticker_price(symbol: str) -> float | None:
+    """获取单个交易对的最新价格。失败返回 None。"""
+    try:
+        exchange = _get_exchange()
+        ticker = exchange.fetch_ticker(symbol)
+        return float(ticker["last"]) if ticker and ticker.get("last") else None
+    except Exception:
+        return None

@@ -91,26 +91,27 @@ def test_insufficient_data():
 
 def test_score_strong_breakout():
     """强势模式应高分。"""
-    score = _score_breakout(
+    total, spike, shrink, reattack, position = _score_breakout(
         spike_vol_ratio=20.0,
         pullback_shrink=0.05,
         reattack_vol_ratio=8.0,
         reattack_close=14.0,
         spike_high=15.0,
     )
-    assert score > 0.7
+    assert total > 0.7
+    assert all(0.0 <= s <= 1.0 for s in (spike, shrink, reattack, position))
 
 
 def test_score_weak_breakout():
     """弱模式应低分。"""
-    score = _score_breakout(
+    total, *_ = _score_breakout(
         spike_vol_ratio=5.0,
         pullback_shrink=0.45,
         reattack_vol_ratio=2.0,
         reattack_close=10.0,
         spike_high=15.0,
     )
-    assert score < 0.4
+    assert total < 0.4
 
 
 def test_score_range():
@@ -118,5 +119,6 @@ def test_score_range():
     for svr in [5, 10, 50, 100]:
         for ps in [0.01, 0.1, 0.3, 0.5]:
             for rvr in [2, 5, 10]:
-                score = _score_breakout(svr, ps, rvr, 12.0, 15.0)
-                assert 0.0 <= score <= 1.0
+                total, *components = _score_breakout(svr, ps, rvr, 12.0, 15.0)
+                assert 0.0 <= total <= 1.0
+                assert all(0.0 <= c <= 1.0 for c in components)

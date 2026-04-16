@@ -84,6 +84,13 @@ def _get_conn() -> sqlite3.Connection:
         ("stop_loss_price",   "REAL"),
         ("take_profit_price", "REAL"),
         ("signal_type",       "TEXT DEFAULT ''"),
+        ("score_breakdown",   "TEXT DEFAULT ''"),
+        ("lifecycle_state",   "TEXT DEFAULT 'detected'"),
+        ("entered_at",        "TEXT"),
+        ("closed_at",         "TEXT"),
+        ("current_price",     "REAL"),
+        ("unrealized_pnl_pct","REAL"),
+        ("price_updated_at",  "TEXT"),
     ]
     for col_name, col_type in sr_migrations:
         if col_name not in sr_existing:
@@ -95,21 +102,25 @@ def _get_conn() -> sqlite3.Connection:
 
 def save_scan(signals: list, mode: str = "accumulation") -> int:
     """保存一次扫描结果（TradeSignal 列表），返回 scan_id。"""
+    import json as _json
     conn = _get_conn()
     try:
         ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         cur = conn.execute("INSERT INTO scans (scan_time) VALUES (?)", (ts,))
         scan_id = cur.lastrowid
         for s in signals:
+            breakdown_json = ""
+            if hasattr(s, "score_breakdown") and s.score_breakdown:
+                breakdown_json = _json.dumps(s.score_breakdown, ensure_ascii=False)
             conn.execute(
                 "INSERT INTO scan_results "
                 "(scan_id, symbol, price, market_cap_m, drop_pct, volume_ratio, window_days, score, mode, "
-                "entry_price, stop_loss_price, take_profit_price, signal_type) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "entry_price, stop_loss_price, take_profit_price, signal_type, score_breakdown) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (scan_id, s.symbol, s.price, s.market_cap_m,
                  s.drop_pct, s.volume_ratio, s.window_days, s.score, mode,
                  s.entry_price, s.stop_loss_price, s.take_profit_price,
-                 s.signal_type),
+                 s.signal_type, breakdown_json),
             )
         conn.commit()
         return scan_id
@@ -183,7 +194,8 @@ def query_scan_results(
         f"""
         SELECT s.scan_time, r.symbol, r.price, r.market_cap_m, r.drop_pct,
                r.volume_ratio, r.window_days, r.score, r.mode,
-               r.entry_price, r.stop_loss_price, r.take_profit_price, r.signal_type
+               r.entry_price, r.stop_loss_price, r.take_profit_price, r.signal_type,
+               r.score_breakdown
         FROM scan_results r JOIN scans s ON r.scan_id = s.id
         {where_sql}
         ORDER BY s.scan_time DESC
@@ -192,7 +204,20 @@ def query_scan_results(
         params + [per_page, offset],
     ).fetchall()
     conn.close()
-    return [dict(r) for r in rows], total
+    import json as _json
+    results = []
+    for r in rows:
+        d = dict(r)
+        raw = d.get("score_breakdown", "")
+        if raw and isinstance(raw, str):
+            try:
+                d["score_breakdown"] = _json.loads(raw)
+            except (ValueError, TypeError):
+                d["score_breakdown"] = None
+        else:
+            d["score_breakdown"] = None
+        results.append(d)
+    return results, total
 
 
 def save_order(
@@ -395,3 +420,77 @@ def get_today_scans(mode: str) -> list[dict]:
         return [dict(r) for r in rows]
     finally:
         conn.close()
+
+
+def get_active_signals() -> list[dict]:
+    """获取 lifecycle_state in ('detected', 'entered') 的活跃信号。"""
+    conn = _get_conn()
+    rows = conn.execute("""
+        SELECT r.id, r.symbol, r.price, r.score, r.mode, r.signal_type,
+               r.entry_price, r.stop_loss_price, r.take_profit_price,
+               r.lifecycle_state, r.current_price, r.unrealized_pnl_pct,
+               r.price_updated_at, r.entered_at, r.score_breakdown,
+               s.scan_time
+        FROM scan_results r JOIN scans s ON r.scan_id = s.id
+        WHERE r.lifecycle_state IN ('detected', 'entered')
+        ORDER BY s.scan_time DESC
+    """).fetchall()
+    conn.close()
+    import json as _json
+    results = []
+    for r in rows:
+        d = dict(r)
+        raw = d.get("score_breakdown", "")
+        if raw and isinstance(raw, str):
+            try:
+                d["score_breakdown"] = _json.loads(raw)
+            except (ValueError, TypeError):
+                d["score_breakdown"] = None
+        else:
+            d["score_breakdown"] = None
+        results.append(d)
+    return results
+
+
+def update_signal_lifecycle(result_id: int, state: str, **kwargs) -> None:
+    """更新信号生命周期状态。kwargs 可含 entered_at, closed_at, current_price, unrealized_pnl_pct 等。"""
+    conn = _get_conn()
+    sets = ["lifecycle_state = ?"]
+    params: list = [state]
+    for col in ("entered_at", "closed_at", "current_price", "unrealized_pnl_pct", "price_updated_at"):
+        if col in kwargs:
+            sets.append(f"{col} = ?")
+            params.append(kwargs[col])
+    params.append(result_id)
+    conn.execute(f"UPDATE scan_results SET {', '.join(sets)} WHERE id = ?", params)
+    conn.commit()
+    conn.close()
+
+
+def get_signal_outcomes(days: int = 30) -> dict:
+    """近 N 天信号结果分布统计。"""
+    conn = _get_conn()
+    cutoff = (datetime.now() - __import__("datetime").timedelta(days=days)).strftime("%Y-%m-%d")
+    rows = conn.execute("""
+        SELECT r.lifecycle_state, COUNT(*) as cnt
+        FROM scan_results r JOIN scans s ON r.scan_id = s.id
+        WHERE s.scan_time >= ?
+        GROUP BY r.lifecycle_state
+    """, (cutoff,)).fetchall()
+    conn.close()
+    return {r["lifecycle_state"]: r["cnt"] for r in rows}
+
+
+def get_signal_count_trend(days: int = 7) -> list[dict]:
+    """近 N 天每天各模式信号数量趋势。"""
+    conn = _get_conn()
+    cutoff = (datetime.now() - __import__("datetime").timedelta(days=days)).strftime("%Y-%m-%d")
+    rows = conn.execute("""
+        SELECT DATE(s.scan_time) as day, r.mode, COUNT(*) as cnt
+        FROM scan_results r JOIN scans s ON r.scan_id = s.id
+        WHERE s.scan_time >= ?
+        GROUP BY DATE(s.scan_time), r.mode
+        ORDER BY day
+    """, (cutoff,)).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
