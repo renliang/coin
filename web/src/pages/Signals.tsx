@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
-import { RefreshCw, Search, ChevronLeft, ChevronRight, Loader2 } from "lucide-react";
+import { RefreshCw, Search, ChevronLeft, ChevronRight, Loader2, Copy, Check } from "lucide-react";
 import type { Signal, PaginatedSignals } from "../api/client";
 import { fetchSignals, triggerScan, fetchScanStatus } from "../api/client";
 import {
@@ -19,6 +19,15 @@ const MODES = [
   { value: "accumulation", label: "蓄力" },
   { value: "divergence", label: "背离" },
   { value: "breakout", label: "突破" },
+  { value: "smc", label: "SMC" },
+];
+
+const SCAN_MODES = [
+  { value: "all", label: "全部扫描" },
+  { value: "accumulation", label: "仅蓄力" },
+  { value: "divergence", label: "仅背离" },
+  { value: "breakout", label: "仅突破" },
+  { value: "smc", label: "仅SMC" },
 ];
 
 export default function Signals() {
@@ -35,6 +44,7 @@ export default function Signals() {
 
   // scan state
   const [scanning, setScanning] = useState(false);
+  const [scanMode, setScanMode] = useState("all");
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const load = useCallback(() => {
@@ -59,7 +69,7 @@ export default function Signals() {
 
   // scan polling
   const startScan = () => {
-    triggerScan()
+    triggerScan(scanMode)
       .then((res) => {
         if (res.started) {
           setScanning(true);
@@ -91,18 +101,30 @@ export default function Signals() {
       {/* Header */}
       <div className="flex items-center justify-between">
         <h2 className="text-xl font-bold">信号流</h2>
-        <button
-          onClick={startScan}
-          disabled={scanning}
-          className="flex items-center gap-2 px-4 py-2 rounded-lg bg-blue-500/15 text-blue-400 text-sm font-medium hover:bg-blue-500/25 transition-colors disabled:opacity-50"
-        >
-          {scanning ? (
-            <Loader2 size={16} className="animate-spin" />
-          ) : (
-            <RefreshCw size={16} />
-          )}
-          {scanning ? "扫描中..." : "立即扫描"}
-        </button>
+        <div className="flex items-center gap-2">
+          <select
+            value={scanMode}
+            onChange={(e) => setScanMode(e.target.value)}
+            disabled={scanning}
+            className="bg-[var(--color-card)] border border-slate-700 rounded-lg px-2 py-2 text-sm text-slate-200 focus:outline-none focus:border-blue-500 disabled:opacity-50"
+          >
+            {SCAN_MODES.map((m) => (
+              <option key={m.value} value={m.value}>{m.label}</option>
+            ))}
+          </select>
+          <button
+            onClick={startScan}
+            disabled={scanning}
+            className="flex items-center gap-2 px-4 py-2 rounded-lg bg-blue-500/15 text-blue-400 text-sm font-medium hover:bg-blue-500/25 transition-colors disabled:opacity-50"
+          >
+            {scanning ? (
+              <Loader2 size={16} className="animate-spin" />
+            ) : (
+              <RefreshCw size={16} />
+            )}
+            {scanning ? "扫描中..." : "扫描"}
+          </button>
+        </div>
       </div>
 
       {/* Filters */}
@@ -243,6 +265,17 @@ function _pageNum(current: number, total: number, index: number): number {
   return start + index;
 }
 
+/** 复制交易参数到剪贴板 */
+function copyTradeParams(signal: Signal) {
+  const dir = signal.signal_type || modeName(signal.mode);
+  const lines = [
+    `${signal.symbol} ${dir}`,
+    `入场: ${price(signal.entry_price)} | 止损: ${price(signal.stop_loss_price)} | 止盈: ${price(signal.take_profit_price)}`,
+    `评分: ${signal.score.toFixed(2)}`,
+  ];
+  return navigator.clipboard.writeText(lines.join("\n"));
+}
+
 /** 可展开的信号卡片 */
 function SignalDetailCard({
   signal,
@@ -255,6 +288,7 @@ function SignalDetailCard({
 }) {
   const { symbol, score, mode, entry_price, stop_loss_price, take_profit_price, signal_type, scan_time } = signal;
   const symbolSlug = symbol.replace("/", "-");
+  const [copied, setCopied] = useState(false);
 
   return (
     <div
@@ -295,6 +329,23 @@ function SignalDetailCard({
             <span className="text-slate-500">止盈</span>
             <p className="font-mono text-emerald-400 mt-0.5">{price(take_profit_price)}</p>
           </div>
+        </div>
+
+        {/* Copy button */}
+        <div className="mt-2 flex justify-end">
+          <button
+            onClick={(e) => {
+              e.stopPropagation();
+              copyTradeParams(signal).then(() => {
+                setCopied(true);
+                setTimeout(() => setCopied(false), 2000);
+              });
+            }}
+            className="flex items-center gap-1 px-2 py-1 rounded text-xs text-slate-400 hover:text-blue-400 hover:bg-blue-500/10 transition-colors"
+          >
+            {copied ? <Check size={12} className="text-emerald-400" /> : <Copy size={12} />}
+            {copied ? "已复制" : "复制参数"}
+          </button>
         </div>
 
         {/* Expanded detail */}

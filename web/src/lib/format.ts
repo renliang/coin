@@ -41,6 +41,7 @@ export function modeName(mode: string): string {
     accumulation: "蓄力",
     divergence: "背离",
     breakout: "突破",
+    smc: "SMC",
   };
   return map[mode] ?? mode;
 }
@@ -51,6 +52,7 @@ export function modeColor(mode: string): string {
     accumulation: "text-blue-400 bg-blue-500/15",
     divergence: "text-purple-400 bg-purple-500/15",
     breakout: "text-orange-400 bg-orange-500/15",
+    smc: "text-teal-400 bg-teal-500/15",
   };
   return map[mode] ?? "text-slate-400 bg-slate-500/15";
 }

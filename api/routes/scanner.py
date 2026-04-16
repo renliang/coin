@@ -46,7 +46,7 @@ def _get_latest_scan_signals() -> tuple[list[dict], str | None]:
         last_day = last_time[:10]
 
         all_signals: list[dict] = []
-        for mode in ("accumulation", "divergence", "breakout"):
+        for mode in ("accumulation", "divergence", "breakout", "smc"):
             scan_row = conn.execute(
                 """SELECT MAX(s.id) AS max_id FROM scans s
                    JOIN scan_results r ON r.scan_id = s.id
@@ -102,8 +102,9 @@ def dashboard() -> dict:
     accum = get_today_scans("accumulation")
     div = get_today_scans("divergence")
     breakout = get_today_scans("breakout")
+    smc = get_today_scans("smc")
 
-    all_signals = accum + div + breakout
+    all_signals = accum + div + breakout + smc
     is_today = True
     last_scan_time = None
 
@@ -113,7 +114,7 @@ def dashboard() -> dict:
 
     all_signals.sort(key=lambda s: s.get("score", 0), reverse=True)
 
-    signal_counts = {"accumulation": 0, "divergence": 0, "breakout": 0}
+    signal_counts = {"accumulation": 0, "divergence": 0, "breakout": 0, "smc": 0}
     for s in all_signals:
         m = s.get("mode", "")
         if m in signal_counts:
@@ -257,8 +258,10 @@ def performance() -> dict:
 
 
 @router.post("/scan")
-def trigger_scan() -> dict:
-    """触发扫描。"""
+def trigger_scan(
+    mode: str = Query("all"),
+) -> dict:
+    """触发扫描。mode=all 跑全部，或指定单个模式：accumulation/divergence/breakout/smc。"""
     from api.app import scan_lock, scan_state
 
     if not scan_lock.acquire(blocking=False):
@@ -269,16 +272,19 @@ def trigger_scan() -> dict:
         scan_state["started_at"] = time.time()
         scan_state["error"] = None
         try:
-            from main import load_config, run, run_breakout, run_divergence
+            from main import load_config, run, run_breakout, run_divergence, run_smc
 
             cfg, sig_cfg, *_ = load_config(
                 os.path.join(os.path.dirname(__file__), "..", "..", "config.yaml")
             )
-            for fn, name in [
+            all_modes = [
                 (run, "accumulation"),
                 (run_divergence, "divergence"),
                 (run_breakout, "breakout"),
-            ]:
+                (run_smc, "smc"),
+            ]
+            targets = all_modes if mode == "all" else [(fn, n) for fn, n in all_modes if n == mode]
+            for fn, name in targets:
                 try:
                     fn(cfg, sig_cfg)
                 except Exception as e:

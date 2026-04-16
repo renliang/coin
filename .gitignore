@@ -19,3 +19,4 @@ scanner/optimize/models/
 data/
 .env.prod
 .claude/
+.gstack/

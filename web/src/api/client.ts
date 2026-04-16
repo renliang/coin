@@ -98,7 +98,7 @@ export interface DashboardData {
   top_signals: Signal[];
   positions: Position[];
   hit_rate_7d: { date: string; total: number; wins: number; win_rate: number }[];
-  signal_counts: { accumulation: number; divergence: number; breakout: number };
+  signal_counts: { accumulation: number; divergence: number; breakout: number; smc: number };
   is_today: boolean;
   last_scan_time: string | null;
 }
@@ -155,7 +155,8 @@ export const fetchCoinDetail = (symbol: string) =>
 
 export const fetchPerformance = () => get<PerformanceData>("/performance");
 
-export const triggerScan = () => post<{ started: boolean; reason?: string }>("/scan");
+export const triggerScan = (mode = "all") =>
+  post<{ started: boolean; reason?: string }>(`/scan?mode=${encodeURIComponent(mode)}`);
 
 export const fetchScanStatus = () =>
   get<{ running: boolean; started_at: number | null; finished_at: number | null; error: string | null }>(
