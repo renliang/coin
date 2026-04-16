@@ -31,8 +31,10 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 .venv/bin/python main.py --mode divergence          # → scan --mode divergence
 .venv/bin/python main.py --backtest --days 180      # → backtest --days 180
 
-# Scan history web UI (read-only browser for scanner.db scan_results)
-.venv/bin/python -m history_ui                     # http://127.0.0.1:5050  (HISTORY_UI_HOST / HISTORY_UI_PORT)
+# API server (FastAPI + React SPA)
+.venv/bin/python -m api                            # http://127.0.0.1:8000  (API_HOST / API_PORT)
+cd web && npm run dev                              # frontend dev server (Vite, port 5173, proxies /api to 8000)
+# OpenAPI docs: http://127.0.0.1:8000/docs
 
 # Test
 .venv/bin/pytest tests/ -v                         # all tests
@@ -66,7 +68,7 @@ config.yaml → load_config()
 - `signal.py` — `SignalConfig` + `TradeSignal` dataclasses. Generates entry/SL/TP from score-filtered matches. Bearish signals reverse SL/TP.
 - `backtest.py` — Sliding window historical detection with 3/7/14/30d return stats. Deduplicates within window_max_days.
 - `tracker.py` — SQLite (`scanner.db`): `scans` + `scan_results` tables; `query_scan_results()` for paginated history UI.
-- `history_ui/` — Flask + Jinja2 local page to browse scan history (`python -m history_ui`).
+- `api/` — FastAPI app with scanner/sentiment/portfolio JSON endpoints and React SPA serving (`python -m api`).
 - `coingecko.py` — Market cap pagination with rate limit handling.
 - `new_coin.py` — Recent listings discovery via binary search for first candle date.
 - `listing_intel.py` — L2 enrichment: Binance CMS announcements, DexScreener chain pools, rule-based DD scoring.
