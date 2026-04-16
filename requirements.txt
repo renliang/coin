@@ -17,3 +17,4 @@ feedparser>=6.0.0
 snscrape>=0.7.0
 telethon>=1.36.0
 riskfolio-lib>=6.0.0
+quantstats>=0.0.62
