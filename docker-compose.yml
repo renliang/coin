@@ -17,6 +17,7 @@ services:
       - COIN_DB_PATH=/app/data/scanner.db
       - API_HOST=0.0.0.0
       - API_PORT=8000
+      - PYTHONUNBUFFERED=1
 
   worker:
     build: .
@@ -32,5 +33,6 @@ services:
       - .env.prod
     environment:
       - COIN_DB_PATH=/app/data/scanner.db
+      - PYTHONUNBUFFERED=1
     depends_on:
       - coin
