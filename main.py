@@ -1580,9 +1580,8 @@ def run_sentiment_scan(sentiment_config: dict, symbols_override: list[str] | Non
     analyzed = []
     for item in items:
         if item.score == 0.0:
-            analyzed_item = analyze_text(item.raw_text, item.source, item.symbol)
-            if analyzed_item:
-                analyzed.append(analyzed_item)
+            score = analyze_text(item.raw_text)
+            analyzed.append(replace(item, score=score))
         else:
             analyzed.append(item)
 
