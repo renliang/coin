@@ -4,6 +4,8 @@ import {
   Radio,
   Briefcase,
   TrendingUp,
+  Activity,
+  PieChart,
 } from "lucide-react";
 
 const navItems = [
@@ -11,6 +13,8 @@ const navItems = [
   { to: "/signals", icon: Radio, label: "信号" },
   { to: "/positions", icon: Briefcase, label: "持仓" },
   { to: "/performance", icon: TrendingUp, label: "绩效" },
+  { to: "/sentiment", icon: Activity, label: "舆情" },
+  { to: "/portfolio", icon: PieChart, label: "组合" },
 ] as const;
 
 export default function Layout() {
