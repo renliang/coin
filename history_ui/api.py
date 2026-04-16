@@ -351,6 +351,148 @@ def get_config():
     return jsonify(data)
 
 
+# ── Sentiment endpoints ──────────────────────────────────────────────────────
+
+
+@api_bp.route("/sentiment/latest")
+def sentiment_latest():
+    """每个 symbol 的最新情绪信号。"""
+    from sentiment.store import _get_conn
+    conn = _get_conn()
+    try:
+        rows = conn.execute("""
+            SELECT s1.* FROM sentiment_signals s1
+            INNER JOIN (SELECT symbol, MAX(id) as max_id FROM sentiment_signals GROUP BY symbol) s2
+            ON s1.id = s2.max_id ORDER BY s1.created_at DESC
+        """).fetchall()
+        return jsonify({"signals": [dict(r) for r in rows]})
+    finally:
+        conn.close()
+
+
+@api_bp.route("/sentiment/history")
+def sentiment_history():
+    """指定 symbol 的每日平均情绪分数历史。"""
+    symbol = request.args.get("symbol", "")
+    days = int(request.args.get("days", 7))
+    from sentiment.store import _get_conn
+    conn = _get_conn()
+    try:
+        rows = conn.execute("""
+            SELECT date(created_at) as date, AVG(score) as score,
+                   CASE WHEN AVG(score) > 0.1 THEN 'bullish'
+                        WHEN AVG(score) < -0.1 THEN 'bearish' ELSE 'neutral' END as direction
+            FROM sentiment_signals
+            WHERE (? = '' OR symbol = ?) AND created_at >= date('now', ? || ' days')
+            GROUP BY date(created_at) ORDER BY date ASC
+        """, (symbol, symbol, f"-{days}")).fetchall()
+        return jsonify({"history": [dict(r) for r in rows]})
+    finally:
+        conn.close()
+
+
+@api_bp.route("/sentiment/items")
+def sentiment_items():
+    """分页查询原始情绪条目。"""
+    source = request.args.get("source", "")
+    symbol = request.args.get("symbol", "")
+    page = int(request.args.get("page", 1))
+    per_page = int(request.args.get("per_page", 20))
+    offset = (page - 1) * per_page
+    from sentiment.store import _get_conn
+    conn = _get_conn()
+    try:
+        clauses, params = [], []
+        if source:
+            clauses.append("source = ?")
+            params.append(source)
+        if symbol:
+            clauses.append("symbol = ?")
+            params.append(symbol)
+        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        total = conn.execute(f"SELECT COUNT(*) FROM sentiment_items {where}", params).fetchone()[0]
+        rows = conn.execute(
+            f"SELECT * FROM sentiment_items {where} ORDER BY id DESC LIMIT ? OFFSET ?",
+            params + [per_page, offset],
+        ).fetchall()
+        return jsonify({"items": [dict(r) for r in rows], "total": total, "page": page, "per_page": per_page})
+    finally:
+        conn.close()
+
+
+# ── Portfolio endpoints ───────────────────────────────────────────────────────
+
+
+@api_bp.route("/portfolio/status")
+def portfolio_status():
+    """当前策略权重 + NAV + 最大回撤。"""
+    from portfolio.store import query_latest_weights, query_nav_history
+    weights = query_latest_weights()
+    nav_rows = query_nav_history(limit=1)
+    nav = nav_rows[0]["nav"] if nav_rows else 0.0
+    hwm = nav_rows[0]["hwm"] if nav_rows else 0.0
+    drawdown = (hwm - nav) / hwm if hwm > 0 else 0.0
+    return jsonify({
+        "weights": weights,
+        "nav": nav,
+        "high_water_mark": hwm,
+        "drawdown_pct": round(drawdown, 4),
+        "portfolio_halted": drawdown > 0.05,
+        "halted_strategies": [],
+    })
+
+
+@api_bp.route("/portfolio/nav-history")
+def portfolio_nav_history():
+    """NAV 历史（按日期升序）。"""
+    days = int(request.args.get("days", 90))
+    from portfolio.store import query_nav_history
+    history = query_nav_history(limit=days)
+    history.reverse()
+    return jsonify({"history": history})
+
+
+@api_bp.route("/portfolio/weights-history")
+def portfolio_weights_history():
+    """策略权重历史（按日期分组）。"""
+    from portfolio.store import _get_conn
+    conn = _get_conn()
+    try:
+        rows = conn.execute(
+            "SELECT date, strategy_id, weight FROM strategy_weights ORDER BY date ASC"
+        ).fetchall()
+        by_date: dict = {}
+        for r in rows:
+            d = r["date"]
+            if d not in by_date:
+                by_date[d] = {"date": d, "weights": {}}
+            by_date[d]["weights"][r["strategy_id"]] = r["weight"]
+        return jsonify({"history": list(by_date.values())})
+    finally:
+        conn.close()
+
+
+@api_bp.route("/portfolio/risk-events")
+def portfolio_risk_events():
+    """风险事件列表。"""
+    limit = int(request.args.get("limit", 20))
+    from portfolio.store import query_risk_events
+    return jsonify({"events": query_risk_events(limit=limit)})
+
+
+@api_bp.route("/portfolio/rebalance", methods=["POST"])
+def portfolio_rebalance():
+    """触发组合再平衡。"""
+    try:
+        from main import load_config, run_portfolio_rebalance
+        _, _, _, _, _, portfolio_config = load_config()
+        run_portfolio_rebalance(portfolio_config)
+        from portfolio.store import query_latest_weights
+        return jsonify({"success": True, "weights": query_latest_weights()})
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
 def _compute_7d_hit_rate(closed_trades: list[dict]) -> list[dict]:
     """近7天每天各模式的胜率。"""
     today = datetime.now().date()
