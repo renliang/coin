@@ -69,7 +69,7 @@ export interface Signal {
 }
 
 export interface Position {
-  id: number;
+  id: number | null;
   symbol: string;
   side: string;
   entry_price: number;
@@ -84,6 +84,21 @@ export interface Position {
   pnl_pct: number | null;
   exit_reason: string | null;
   mode: string;
+  source?: "system" | "manual";
+}
+
+export interface OpenOrder {
+  order_id: string;
+  symbol: string;
+  side: string;                 // buy / sell
+  type: string;                 // limit / market / take_profit_market / stop_market
+  amount: number;
+  price: number | null;
+  stop_price: number | null;
+  position_side: string;        // LONG / SHORT / BOTH
+  reduce_only: boolean;
+  created_at: string;
+  source: "system" | "manual";
 }
 
 export interface DashboardData {
@@ -168,6 +183,8 @@ export const fetchKlines = (symbol: string, days = 30) =>
 
 export const fetchActiveSignals = () =>
   get<{ data: ActiveSignal[] }>("/signals/active");
+
+export const fetchOpenOrders = () => get<{ data: OpenOrder[] }>("/orders/open");
 
 export const fetchSignalOutcomes = (days = 30) =>
   get<{ data: Record<string, number> }>("/signals/outcomes", { days: String(days) });

@@ -18,11 +18,16 @@ from scanner.tracker import (
     get_active_signals,
     get_closed_trades,
     get_closed_trades_by_symbol,
+    get_open_orders,
     get_open_positions,
     get_signal_count_trend,
     get_signal_outcomes,
     get_today_scans,
     query_scan_results,
+)
+from api.routes._exchange import (
+    fetch_exchange_open_orders,
+    fetch_exchange_positions,
 )
 
 router = APIRouter()
@@ -188,8 +193,98 @@ def signals(
 
 @router.get("/positions")
 def positions() -> dict:
-    """活跃持仓列表。"""
-    return {"data": get_open_positions()}
+    """活跃持仓列表：合并交易所实时 + 本地 DB 元数据。
+
+    - source="system"：系统下单并有 DB 记录
+    - source="manual"：手动开仓或 DB 记录缺失
+    """
+    db_map = {p["symbol"]: p for p in get_open_positions()}
+    exchange_positions = fetch_exchange_positions()
+
+    result: list[dict] = []
+    seen: set[str] = set()
+
+    for ep in exchange_positions:
+        symbol = ep.get("symbol") or ""
+        if not symbol:
+            continue
+        seen.add(symbol)
+        contracts = float(ep.get("contracts", 0) or 0)
+        side_raw = ep.get("side") or ("long" if contracts > 0 else "short")
+        entry = float(ep.get("entryPrice") or 0)
+        unreal = ep.get("unrealizedPnl")
+        leverage = int(ep.get("leverage") or 1)
+
+        db = db_map.get(symbol)
+        if db:
+            row = dict(db)
+            row["size"] = contracts  # 部分平仓时以交易所为准
+            row["source"] = "system"
+            if unreal is not None:
+                row["pnl"] = float(unreal)
+        else:
+            row = {
+                "id": None,
+                "symbol": symbol,
+                "side": side_raw,
+                "entry_price": entry,
+                "size": contracts,
+                "leverage": leverage,
+                "score": 0,
+                "tp_order_id": None,
+                "sl_order_id": None,
+                "status": "open",
+                "opened_at": ep.get("datetime") or "",
+                "closed_at": None,
+                "exit_price": None,
+                "pnl": float(unreal) if unreal is not None else None,
+                "pnl_pct": (
+                    (float(unreal) / (entry * contracts))
+                    if unreal is not None and entry > 0 and contracts > 0
+                    else None
+                ),
+                "exit_reason": None,
+                "mode": "",
+                "source": "manual",
+            }
+        result.append(row)
+
+    # DB 里有但交易所没有（可能正在同步）— 保留展示，避免 UI 闪烁
+    for symbol, db in db_map.items():
+        if symbol not in seen:
+            row = dict(db)
+            row["source"] = "system"
+            result.append(row)
+
+    return {"data": result}
+
+
+@router.get("/orders/open")
+def open_orders() -> dict:
+    """交易所实时未完成订单，含系统下单 (source=system) + 手动下单 (source=manual)。"""
+    local_map = {str(o["order_id"]): o for o in get_open_orders()}
+    exchange_orders = fetch_exchange_open_orders()
+
+    result: list[dict] = []
+    for eo in exchange_orders:
+        oid = str(eo.get("id") or "")
+        info = eo.get("info", {}) or {}
+        result.append({
+            "order_id": oid,
+            "symbol": eo.get("symbol") or "",
+            "side": eo.get("side") or "",       # buy / sell
+            "type": eo.get("type") or "",       # limit / market / take_profit_market / stop_market
+            "amount": float(eo.get("amount") or 0),
+            "price": float(eo["price"]) if eo.get("price") else None,
+            "stop_price": float(eo["stopPrice"]) if eo.get("stopPrice") else None,
+            "position_side": info.get("positionSide") or "",   # LONG / SHORT / BOTH
+            "reduce_only": bool(info.get("reduceOnly", False)),
+            "created_at": eo.get("datetime") or "",
+            "source": "system" if oid in local_map else "manual",
+        })
+    # 按时间倒序
+    result.sort(key=lambda r: r.get("created_at") or "", reverse=True)
+    return {"data": result}
 
 
 @router.get("/positions/closed")

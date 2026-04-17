@@ -1,8 +1,8 @@
 import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { ChevronLeft, ChevronRight } from "lucide-react";
-import type { Position } from "../api/client";
-import { fetchPositions, fetchClosedPositions } from "../api/client";
+import type { OpenOrder, Position } from "../api/client";
+import { fetchClosedPositions, fetchOpenOrders, fetchPositions } from "../api/client";
 import { modeName, price as fmtPrice, pctSigned } from "../lib/format";
 import LoadingSpinner from "../components/LoadingSpinner";
 
@@ -11,6 +11,7 @@ type Tab = "active" | "closed";
 export default function Positions() {
   const [tab, setTab] = useState<Tab>("active");
   const [active, setActive] = useState<Position[]>([]);
+  const [openOrders, setOpenOrders] = useState<OpenOrder[]>([]);
   const [closed, setClosed] = useState<Position[]>([]);
   const [closedTotal, setClosedTotal] = useState(0);
   const [closedPages, setClosedPages] = useState(1);
@@ -20,9 +21,10 @@ export default function Positions() {
   useEffect(() => {
     setLoading(true);
     if (tab === "active") {
-      fetchPositions()
-        .then((r) => setActive(r.data))
-        .finally(() => setLoading(false));
+      Promise.all([
+        fetchPositions().then((r) => setActive(r.data)).catch(() => setActive([])),
+        fetchOpenOrders().then((r) => setOpenOrders(r.data)).catch(() => setOpenOrders([])),
+      ]).finally(() => setLoading(false));
     } else {
       fetchClosedPositions(String(page), "15")
         .then((r) => {
@@ -59,7 +61,10 @@ export default function Positions() {
       {loading ? (
         <LoadingSpinner />
       ) : tab === "active" ? (
-        <ActivePositions positions={active} />
+        <div className="space-y-6">
+          <ActivePositions positions={active} />
+          <OpenOrdersSection orders={openOrders} />
+        </div>
       ) : (
         <ClosedPositions
           trades={closed}
@@ -74,31 +79,125 @@ export default function Positions() {
 }
 
 function ActivePositions({ positions }: { positions: Position[] }) {
-  if (positions.length === 0) {
-    return <p className="text-center py-16 text-slate-600">暂无活跃持仓</p>;
-  }
-
   return (
-    <div className="space-y-3">
-      {positions.map((p) => (
-        <ActiveCard key={p.id} position={p} />
-      ))}
-    </div>
+    <section>
+      <h3 className="text-sm font-semibold text-slate-400 mb-3">活跃持仓 ({positions.length})</h3>
+      {positions.length === 0 ? (
+        <p className="text-center py-10 text-slate-600 text-sm">暂无活跃持仓</p>
+      ) : (
+        <div className="space-y-3">
+          {positions.map((p) => (
+            <ActiveCard key={`${p.symbol}-${p.id ?? "manual"}`} position={p} />
+          ))}
+        </div>
+      )}
+    </section>
   );
 }
 
+function SourceBadge({ source }: { source?: "system" | "manual" }) {
+  if (source !== "manual") return null;
+  return (
+    <span className="text-[10px] px-1.5 py-0.5 rounded bg-amber-500/15 text-amber-400 border border-amber-500/30">
+      手动
+    </span>
+  );
+}
+
+function OpenOrdersSection({ orders }: { orders: OpenOrder[] }) {
+  return (
+    <section>
+      <h3 className="text-sm font-semibold text-slate-400 mb-3">挂单 ({orders.length})</h3>
+      {orders.length === 0 ? (
+        <p className="text-center py-10 text-slate-600 text-sm">暂无挂单</p>
+      ) : (
+        <div className="bg-[var(--color-card)] border border-slate-800 rounded-xl overflow-hidden">
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="text-xs text-slate-500 border-b border-slate-800">
+                  <th className="text-left py-2 px-3 font-medium">币种</th>
+                  <th className="text-left py-2 px-3 font-medium">方向</th>
+                  <th className="text-left py-2 px-3 font-medium">类型</th>
+                  <th className="text-right py-2 px-3 font-medium">数量</th>
+                  <th className="text-right py-2 px-3 font-medium">价格</th>
+                  <th className="text-right py-2 px-3 font-medium">触发价</th>
+                  <th className="text-left py-2 px-3 font-medium">来源</th>
+                  <th className="text-left py-2 px-3 font-medium">时间</th>
+                </tr>
+              </thead>
+              <tbody>
+                {orders.map((o) => {
+                  const isLong =
+                    o.position_side === "LONG" ||
+                    (o.position_side === "" && o.side === "buy");
+                  return (
+                    <tr key={o.order_id} className="border-b border-slate-800/50 hover:bg-slate-800/30 transition-colors">
+                      <td className="py-2 px-3 font-mono text-slate-200">{o.symbol}</td>
+                      <td className="py-2 px-3">
+                        <span className={isLong ? "text-emerald-400" : "text-red-400"}>
+                          {isLong ? "多" : "空"}
+                        </span>
+                      </td>
+                      <td className="py-2 px-3 text-xs">
+                        <OrderTypeBadge type={o.type} reduceOnly={o.reduce_only} />
+                      </td>
+                      <td className="py-2 px-3 text-right font-mono text-slate-300">{o.amount}</td>
+                      <td className="py-2 px-3 text-right font-mono text-slate-300">
+                        {o.price != null ? fmtPrice(o.price) : "—"}
+                      </td>
+                      <td className="py-2 px-3 text-right font-mono text-slate-400">
+                        {o.stop_price != null ? fmtPrice(o.stop_price) : "—"}
+                      </td>
+                      <td className="py-2 px-3">
+                        {o.source === "manual" ? (
+                          <span className="text-[10px] px-1.5 py-0.5 rounded bg-amber-500/15 text-amber-400 border border-amber-500/30">
+                            手动
+                          </span>
+                        ) : (
+                          <span className="text-[10px] px-1.5 py-0.5 rounded bg-blue-500/15 text-blue-400">
+                            系统
+                          </span>
+                        )}
+                      </td>
+                      <td className="py-2 px-3 text-xs text-slate-500 font-mono">{o.created_at.slice(0, 16).replace("T", " ")}</td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+    </section>
+  );
+}
+
+function OrderTypeBadge({ type, reduceOnly }: { type: string; reduceOnly: boolean }) {
+  const map: Record<string, { label: string; cls: string }> = {
+    limit: { label: "限价开仓", cls: "bg-blue-500/15 text-blue-400" },
+    market: { label: "市价开仓", cls: "bg-blue-500/15 text-blue-400" },
+    take_profit_market: { label: "止盈", cls: "bg-emerald-500/15 text-emerald-400" },
+    stop_market: { label: "止损", cls: "bg-red-500/15 text-red-400" },
+  };
+  const t = type.toLowerCase();
+  const info = map[t] ?? { label: type, cls: "bg-slate-500/15 text-slate-400" };
+  const label = reduceOnly && !info.label.includes("止") ? `${info.label}·平仓` : info.label;
+  return <span className={`px-1.5 py-0.5 rounded ${info.cls}`}>{label}</span>;
+}
+
 function ActiveCard({ position }: { position: Position }) {
-  const { symbol, side, entry_price, leverage, score, opened_at, mode } = position;
+  const { symbol, side, entry_price, leverage, score, opened_at, mode, source, pnl_pct } = position;
   const isLong = side === "long" || side === "buy";
   const sideLabel = isLong ? "多" : "空";
   const sideColor = isLong ? "text-emerald-400 bg-emerald-500/15" : "text-red-400 bg-red-500/15";
-  const days = Math.floor((Date.now() - new Date(opened_at).getTime()) / 86400000);
+  const days = opened_at ? Math.floor((Date.now() - new Date(opened_at).getTime()) / 86400000) : 0;
   const symbolSlug = symbol.replace("/", "-");
 
   return (
     <div className="bg-[var(--color-card)] border border-slate-800 rounded-xl p-4">
       <div className="flex items-center justify-between mb-3">
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2 flex-wrap">
           <Link to={`/coin/${symbolSlug}`} className="font-semibold hover:text-blue-400 transition-colors">
             {symbol}
           </Link>
@@ -106,8 +205,16 @@ function ActiveCard({ position }: { position: Position }) {
             {sideLabel} {leverage}x
           </span>
           {mode && <span className="text-xs text-slate-500">{modeName(mode)}</span>}
+          <SourceBadge source={source} />
         </div>
-        <span className="text-xs text-slate-500">{days}天</span>
+        <div className="flex items-center gap-3 text-xs">
+          {pnl_pct != null && (
+            <span className={`font-mono font-semibold ${pnl_pct >= 0 ? "text-emerald-400" : "text-red-400"}`}>
+              {pctSigned(pnl_pct)}
+            </span>
+          )}
+          {opened_at && <span className="text-slate-500">{days}天</span>}
+        </div>
       </div>
 
       <div className="grid grid-cols-3 gap-3 text-xs">
