@@ -26,6 +26,7 @@ from scanner.tracker import (
     query_scan_results,
 )
 from api.routes._exchange import (
+    fetch_exchange_account,
     fetch_exchange_open_orders,
     fetch_exchange_positions,
 )
@@ -257,6 +258,12 @@ def positions() -> dict:
             result.append(row)
 
     return {"data": result}
+
+
+@router.get("/account/balance")
+def account_balance() -> dict:
+    """合约账户本金概览：钱包余额 / 保证金 / 可用余额 / 未实现盈亏。"""
+    return fetch_exchange_account()
 
 
 @router.get("/orders/open")

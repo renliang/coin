@@ -7,9 +7,10 @@ import time
 logger = logging.getLogger("api.exchange")
 
 _CACHE_TTL = 5.0
-_cache: dict[str, tuple[float, list]] = {
+_cache: dict[str, tuple[float, object]] = {
     "positions": (0.0, []),
     "orders": (0.0, []),
+    "account": (0.0, {}),
 }
 
 
@@ -62,6 +63,38 @@ def fetch_exchange_positions() -> list[dict]:
     except Exception as exc:
         logger.warning("fetch_positions 失败: %s", exc)
         return _cache["positions"][1]
+
+
+def fetch_exchange_account() -> dict:
+    """查币安 USDM 合约账户概览（本金 / 可用 / 已用保证金 / 未实现盈亏）。
+
+    直接调 fapiPrivateV2GetAccount，字段更全；ccxt fetch_balance 不含保证金明细。
+    """
+    ts, data = _cache["account"]
+    if time.time() - ts < _CACHE_TTL:
+        return data  # type: ignore[return-value]
+    ex = _get_exchange()
+    if ex is None:
+        return {}
+    try:
+        raw = ex.fapiPrivateV2GetAccount()
+        def _f(k: str) -> float:
+            v = raw.get(k)
+            return float(v) if v is not None else 0.0
+        data = {
+            "wallet_balance": _f("totalWalletBalance"),
+            "unrealized_pnl": _f("totalUnrealizedProfit"),
+            "margin_balance": _f("totalMarginBalance"),
+            "available_balance": _f("availableBalance"),
+            "initial_margin": _f("totalInitialMargin"),
+            "maint_margin": _f("totalMaintMargin"),
+            "max_withdraw": _f("maxWithdrawAmount"),
+        }
+        _cache["account"] = (time.time(), data)
+        return data
+    except Exception as exc:
+        logger.warning("fetch account 失败: %s", exc)
+        return _cache["account"][1]  # type: ignore[return-value]
 
 
 def fetch_exchange_open_orders() -> list[dict]:

@@ -1,8 +1,13 @@
 import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { ChevronLeft, ChevronRight } from "lucide-react";
-import type { OpenOrder, Position } from "../api/client";
-import { fetchClosedPositions, fetchOpenOrders, fetchPositions } from "../api/client";
+import type { AccountBalance, OpenOrder, Position } from "../api/client";
+import {
+  fetchBalance,
+  fetchClosedPositions,
+  fetchOpenOrders,
+  fetchPositions,
+} from "../api/client";
 import { modeName, price as fmtPrice, pctSigned } from "../lib/format";
 import LoadingSpinner from "../components/LoadingSpinner";
 
@@ -12,6 +17,7 @@ export default function Positions() {
   const [tab, setTab] = useState<Tab>("active");
   const [active, setActive] = useState<Position[]>([]);
   const [openOrders, setOpenOrders] = useState<OpenOrder[]>([]);
+  const [balance, setBalance] = useState<AccountBalance | null>(null);
   const [closed, setClosed] = useState<Position[]>([]);
   const [closedTotal, setClosedTotal] = useState(0);
   const [closedPages, setClosedPages] = useState(1);
@@ -24,6 +30,7 @@ export default function Positions() {
       Promise.all([
         fetchPositions().then((r) => setActive(r.data)).catch(() => setActive([])),
         fetchOpenOrders().then((r) => setOpenOrders(r.data)).catch(() => setOpenOrders([])),
+        fetchBalance().then(setBalance).catch(() => setBalance(null)),
       ]).finally(() => setLoading(false));
     } else {
       fetchClosedPositions(String(page), "15")
@@ -62,6 +69,7 @@ export default function Positions() {
         <LoadingSpinner />
       ) : tab === "active" ? (
         <div className="space-y-6">
+          {balance && <AccountSummary balance={balance} />}
           <ActivePositions positions={active} />
           <OpenOrdersSection orders={openOrders} />
         </div>
@@ -75,6 +83,51 @@ export default function Positions() {
         />
       )}
     </div>
+  );
+}
+
+function AccountSummary({ balance }: { balance: AccountBalance }) {
+  const pnlColor = balance.unrealized_pnl >= 0 ? "text-emerald-400" : "text-red-400";
+  const fmt = (v: number) =>
+    v.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  const marginUsage =
+    balance.margin_balance > 0
+      ? (balance.initial_margin / balance.margin_balance) * 100
+      : 0;
+
+  return (
+    <section className="bg-[var(--color-card)] border border-slate-800 rounded-xl p-4">
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+        <div>
+          <p className="text-xs text-slate-500 mb-1">钱包余额</p>
+          <p className="font-mono text-lg font-semibold text-slate-100">
+            {fmt(balance.wallet_balance)} <span className="text-xs text-slate-500">USDT</span>
+          </p>
+        </div>
+        <div>
+          <p className="text-xs text-slate-500 mb-1">未实现盈亏</p>
+          <p className={`font-mono text-lg font-semibold ${pnlColor}`}>
+            {balance.unrealized_pnl >= 0 ? "+" : ""}
+            {fmt(balance.unrealized_pnl)} <span className="text-xs text-slate-500">USDT</span>
+          </p>
+        </div>
+        <div>
+          <p className="text-xs text-slate-500 mb-1">可用余额</p>
+          <p className="font-mono text-lg font-semibold text-slate-100">
+            {fmt(balance.available_balance)} <span className="text-xs text-slate-500">USDT</span>
+          </p>
+        </div>
+        <div>
+          <p className="text-xs text-slate-500 mb-1">保证金占用</p>
+          <p className="font-mono text-lg font-semibold text-slate-100">
+            {fmt(balance.initial_margin)}{" "}
+            <span className={`text-xs ${marginUsage > 80 ? "text-red-400" : "text-slate-500"}`}>
+              / {marginUsage.toFixed(1)}%
+            </span>
+          </p>
+        </div>
+      </div>
+    </section>
   );
 }
 

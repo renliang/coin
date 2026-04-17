@@ -186,6 +186,18 @@ export const fetchActiveSignals = () =>
 
 export const fetchOpenOrders = () => get<{ data: OpenOrder[] }>("/orders/open");
 
+export interface AccountBalance {
+  wallet_balance: number;
+  unrealized_pnl: number;
+  margin_balance: number;
+  available_balance: number;
+  initial_margin: number;
+  maint_margin: number;
+  max_withdraw: number;
+}
+
+export const fetchBalance = () => get<AccountBalance>("/account/balance");
+
 export const fetchSignalOutcomes = (days = 30) =>
   get<{ data: Record<string, number> }>("/signals/outcomes", { days: String(days) });
 
