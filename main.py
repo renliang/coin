@@ -1253,14 +1253,20 @@ def run_serve(
     logger = logging.getLogger("serve")
     os.makedirs("logs", exist_ok=True)
 
-    scheduler = BlockingScheduler()
+    # 容器默认 UTC，APScheduler 按系统时区解释 cron 表达式。
+    # 显式注入本地时区保证 scan_time=08:10 指北京时间 08:10，而非 UTC 08:10（=北京 16:10）。
+    try:
+        from zoneinfo import ZoneInfo
+        scheduler = BlockingScheduler(timezone=ZoneInfo("Asia/Shanghai"))
+    except Exception:
+        scheduler = BlockingScheduler()
 
     # 定时扫描任务
     from datetime import datetime, timedelta
     hour, minute = map(int, schedule_config.scan_time.split(":"))
 
     def scheduled_scan():
-        logger.info("=== 定时扫描开始（三模式）===")
+        logger.info("=== 定时扫描开始（四模式）===")
         div_signals = []
         try:
             run(config, signal_config)
@@ -1274,6 +1280,10 @@ def run_serve(
             run_breakout(config, signal_config)
         except Exception as e:
             logger.error("breakout 扫描异常: %s", e)
+        try:
+            run_smc(config, signal_config)
+        except Exception as e:
+            logger.error("smc 扫描异常: %s", e)
         if div_signals and trading_config.enabled:
             top_signals = sorted(div_signals, key=lambda s: s.score, reverse=True)[:2]
             logger.info("背离信号 %d 个，挂单 top %d (按 score 排序)", len(div_signals), len(top_signals))
