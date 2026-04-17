@@ -122,9 +122,8 @@ def main(argv: list[str] | None = None) -> None:
         elif args.mode == "breakout":
             run_breakout(config, signal_config, top_n=args.top, symbols_override=args.symbols)
         elif args.mode == "divergence":
-            signals = run_divergence(config, signal_config, top_n=args.top, symbols_override=args.symbols)
-            if signals and trading_config.enabled:
-                execute_trading_pipeline(signals, trading_config)
+            # CLI 手动扫描只刷数据，不自动下单。下单由 serve 模式的每日 cron 统一负责。
+            run_divergence(config, signal_config, top_n=args.top, symbols_override=args.symbols)
         else:
             run(config, signal_config, top_n=args.top, symbols_override=args.symbols)
 

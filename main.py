@@ -1283,8 +1283,8 @@ def run_serve(
     from datetime import datetime, timedelta
     hour, minute = map(int, schedule_config.scan_time.split(":"))
 
-    def scheduled_scan():
-        logger.info("=== 定时扫描开始（四模式）===")
+    def _scan_all_modes() -> list:
+        """跑四模式扫描，返回 divergence signals 列表。下单在外层判断。"""
         div_signals = []
         try:
             run(config, signal_config)
@@ -1302,6 +1302,18 @@ def run_serve(
             run_smc(config, signal_config)
         except Exception as e:
             logger.error("smc 扫描异常: %s", e)
+        return div_signals or []
+
+    def startup_scan():
+        """容器启动立即跑：只刷数据，不下单（避免每次重启重复挂单）。"""
+        logger.info("=== 启动扫描开始（四模式，仅刷数据不下单）===")
+        _scan_all_modes()
+        logger.info("=== 启动扫描结束 ===")
+
+    def daily_scan():
+        """每天 cron 触发：扫描 + 背离 top 2 下单。"""
+        logger.info("=== 定时扫描开始（四模式 + 下单）===")
+        div_signals = _scan_all_modes()
         if div_signals and trading_config.enabled:
             top_signals = sorted(div_signals, key=lambda s: s.score, reverse=True)[:2]
             logger.info("背离信号 %d 个，挂单 top %d (按 score 排序)", len(div_signals), len(top_signals))
@@ -1310,12 +1322,12 @@ def run_serve(
             logger.info("trading.enabled=false，仅扫描不下单")
         logger.info("=== 定时扫描结束 ===")
 
-    # 启动时立即跑一次（避免进程在 08:10 之后启动导致当天扫描被跳过）
-    scheduler.add_job(scheduled_scan, "date",
+    # 启动时立即跑一次（避免进程在 08:10 之后启动导致当天扫描被跳过，但不下单）
+    scheduler.add_job(startup_scan, "date",
                       run_date=datetime.now() + timedelta(seconds=10),
                       id="startup_scan")
-    scheduler.add_job(scheduled_scan, "cron", hour=hour, minute=minute, id="daily_scan")
-    logger.info("定时扫描已注册: 启动后10秒执行一次，之后每天 %s", schedule_config.scan_time)
+    scheduler.add_job(daily_scan, "cron", hour=hour, minute=minute, id="daily_scan")
+    logger.info("定时扫描已注册: 启动后10秒执行一次（仅扫描），之后每天 %s (扫描+下单)", schedule_config.scan_time)
 
     # 订单监控任务
     if trading_config.enabled:
