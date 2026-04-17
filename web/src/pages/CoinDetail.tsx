@@ -162,8 +162,8 @@ export default function CoinDetail() {
                         <td className="py-2 px-4 text-xs font-mono text-slate-400">{t.opened_at.slice(0, 16)}</td>
                         <td className="py-2 px-4 text-xs font-mono text-slate-400">{(t.closed_at ?? "").slice(0, 16)}</td>
                         <td className="py-2 px-4">
-                          <span className={t.side === "buy" ? "text-emerald-400" : "text-red-400"}>
-                            {t.side === "buy" ? "多" : "空"} {t.leverage}x
+                          <span className={t.side === "long" || t.side === "buy" ? "text-emerald-400" : "text-red-400"}>
+                            {t.side === "long" || t.side === "buy" ? "多" : "空"} {t.leverage}x
                           </span>
                         </td>
                         <td className="py-2 px-4 text-right font-mono">{fmtPrice(t.entry_price)}</td>

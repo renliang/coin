@@ -7,8 +7,9 @@ interface Props {
 
 export default function PositionRow({ position }: Props) {
   const { symbol, side, entry_price, leverage, score, opened_at, mode, pnl_pct } = position;
-  const sideLabel = side === "buy" ? "多" : "空";
-  const sideColor = side === "buy" ? "text-emerald-400 bg-emerald-500/15" : "text-red-400 bg-red-500/15";
+  const isLong = side === "long" || side === "buy";
+  const sideLabel = isLong ? "多" : "空";
+  const sideColor = isLong ? "text-emerald-400 bg-emerald-500/15" : "text-red-400 bg-red-500/15";
 
   // 持仓天数
   const days = Math.floor((Date.now() - new Date(opened_at).getTime()) / 86400000);
