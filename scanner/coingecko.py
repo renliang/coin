@@ -1,7 +1,9 @@
+import logging
 import time
 
 import requests
 
+logger = logging.getLogger(__name__)
 
 COINGECKO_BASE = "https://api.coingecko.com/api/v3"
 
@@ -53,13 +55,13 @@ def fetch_small_cap_coins(
             )
             if resp.status_code == 429:
                 wait = 2 ** attempt * 15
-                print(f"       CoinGecko限速，等待{wait}秒...")
+                logger.warning("CoinGecko限速，等待%d秒...", wait)
                 time.sleep(wait)
                 continue
             resp.raise_for_status()
             break
         else:
-            print("       CoinGecko持续限速，使用已收集的数据继续。")
+            logger.warning("CoinGecko持续限速，使用已收集的数据继续。")
             break
 
         data = resp.json()
@@ -79,7 +81,7 @@ def fetch_small_cap_coins(
                 "market_cap": mc,
             })
 
-        print(f"       第{page}页完成，已收集{len(coins)}个小市值币种")
+        logger.info("第%d页完成，已收集%d个小市值币种", page, len(coins))
 
         if len(coins) >= max_coins:
             coins = coins[:max_coins]
@@ -127,7 +129,7 @@ def fetch_market_caps(symbols: list[str], page_delay: float = 8) -> dict[str, fl
             )
             if resp.status_code == 429:
                 wait = 2 ** attempt * 15
-                print(f"       CoinGecko限速，等待{wait}秒...")
+                logger.warning("CoinGecko限速，等待%d秒...", wait)
                 time.sleep(wait)
                 continue
             resp.raise_for_status()
@@ -146,7 +148,7 @@ def fetch_market_caps(symbols: list[str], page_delay: float = 8) -> dict[str, fl
                 result[sym] = mc
 
         remaining = len(symbols_set - result.keys())
-        print(f"       市值查询第{page}页，已找到{len(result)}个，剩余{remaining}个")
+        logger.info("市值查询第%d页，已找到%d个，剩余%d个", page, len(result), remaining)
 
         if remaining == 0 or len(data) < 250:
             break

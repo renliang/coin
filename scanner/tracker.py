@@ -1,6 +1,9 @@
+import logging
 import os
 import sqlite3
-from datetime import datetime
+from datetime import datetime, timedelta
+
+logger = logging.getLogger(__name__)
 
 
 DB_PATH = os.environ.get("COIN_DB_PATH", "scanner.db")
@@ -132,14 +135,16 @@ def save_scan(signals: list, mode: str = "accumulation") -> int:
 def get_history(symbol: str, limit: int = 10) -> list[dict]:
     """查询某币种的历史扫描记录"""
     conn = _get_conn()
-    rows = conn.execute("""
-        SELECT s.scan_time, r.price, r.drop_pct, r.volume_ratio, r.window_days, r.score
-        FROM scan_results r JOIN scans s ON r.scan_id = s.id
-        WHERE r.symbol = ?
-        ORDER BY s.scan_time DESC LIMIT ?
-    """, (symbol, limit)).fetchall()
-    conn.close()
-    return [dict(r) for r in rows]
+    try:
+        rows = conn.execute("""
+            SELECT s.scan_time, r.price, r.drop_pct, r.volume_ratio, r.window_days, r.score
+            FROM scan_results r JOIN scans s ON r.scan_id = s.id
+            WHERE r.symbol = ?
+            ORDER BY s.scan_time DESC LIMIT ?
+        """, (symbol, limit)).fetchall()
+        return [dict(r) for r in rows]
+    finally:
+        conn.close()
 
 
 def query_scan_results(
@@ -185,26 +190,28 @@ def query_scan_results(
     where_sql = (" WHERE " + " AND ".join(conditions)) if conditions else ""
 
     conn = _get_conn()
-    count_row = conn.execute(
-        f"SELECT COUNT(*) FROM scan_results r JOIN scans s ON r.scan_id = s.id{where_sql}",
-        params,
-    ).fetchone()
-    total = int(count_row[0])
+    try:
+        count_row = conn.execute(
+            f"SELECT COUNT(*) FROM scan_results r JOIN scans s ON r.scan_id = s.id{where_sql}",
+            params,
+        ).fetchone()
+        total = int(count_row[0])
 
-    rows = conn.execute(
-        f"""
-        SELECT s.scan_time, r.symbol, r.price, r.market_cap_m, r.drop_pct,
-               r.volume_ratio, r.window_days, r.score, r.mode,
-               r.entry_price, r.stop_loss_price, r.take_profit_price, r.signal_type,
-               r.score_breakdown
-        FROM scan_results r JOIN scans s ON r.scan_id = s.id
-        {where_sql}
-        ORDER BY s.scan_time DESC
-        LIMIT ? OFFSET ?
-        """,
-        params + [per_page, offset],
-    ).fetchall()
-    conn.close()
+        rows = conn.execute(
+            f"""
+            SELECT s.scan_time, r.symbol, r.price, r.market_cap_m, r.drop_pct,
+                   r.volume_ratio, r.window_days, r.score, r.mode,
+                   r.entry_price, r.stop_loss_price, r.take_profit_price, r.signal_type,
+                   r.score_breakdown
+            FROM scan_results r JOIN scans s ON r.scan_id = s.id
+            {where_sql}
+            ORDER BY s.scan_time DESC
+            LIMIT ? OFFSET ?
+            """,
+            params + [per_page, offset],
+        ).fetchall()
+    finally:
+        conn.close()
     import json as _json
     results = []
     for r in rows:
@@ -233,44 +240,50 @@ def save_order(
 ) -> int:
     """保存一条订单记录，返回本地 id。"""
     conn = _get_conn()
-    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    cur = conn.execute(
-        "INSERT INTO orders (order_id, symbol, side, order_type, price, amount, leverage, status, related_order_id, created_at, updated_at) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?, 'open', ?, ?, ?)",
-        (order_id, symbol, side, order_type, price, amount, leverage, related_order_id, now, now),
-    )
-    row_id = cur.lastrowid
-    conn.commit()
-    conn.close()
-    return row_id
+    try:
+        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        cur = conn.execute(
+            "INSERT INTO orders (order_id, symbol, side, order_type, price, amount, leverage, status, related_order_id, created_at, updated_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, 'open', ?, ?, ?)",
+            (order_id, symbol, side, order_type, price, amount, leverage, related_order_id, now, now),
+        )
+        row_id = cur.lastrowid
+        conn.commit()
+        return row_id
+    finally:
+        conn.close()
 
 
 def update_order_status(order_id: str, status: str) -> None:
     """更新订单状态。"""
     conn = _get_conn()
-    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    conn.execute(
-        "UPDATE orders SET status = ?, updated_at = ? WHERE order_id = ?",
-        (status, now, order_id),
-    )
-    conn.commit()
-    conn.close()
+    try:
+        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        conn.execute(
+            "UPDATE orders SET status = ?, updated_at = ? WHERE order_id = ?",
+            (status, now, order_id),
+        )
+        conn.commit()
+    finally:
+        conn.close()
 
 
 def get_open_orders(order_type: str | None = None) -> list[dict]:
     """获取所有 status='open' 的订单。可按 order_type 过滤。"""
     conn = _get_conn()
-    if order_type:
-        rows = conn.execute(
-            "SELECT * FROM orders WHERE status = 'open' AND order_type = ? ORDER BY created_at",
-            (order_type,),
-        ).fetchall()
-    else:
-        rows = conn.execute(
-            "SELECT * FROM orders WHERE status = 'open' ORDER BY created_at",
-        ).fetchall()
-    conn.close()
-    return [dict(r) for r in rows]
+    try:
+        if order_type:
+            rows = conn.execute(
+                "SELECT * FROM orders WHERE status = 'open' AND order_type = ? ORDER BY created_at",
+                (order_type,),
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT * FROM orders WHERE status = 'open' ORDER BY created_at",
+            ).fetchall()
+        return [dict(r) for r in rows]
+    finally:
+        conn.close()
 
 
 def save_position(
@@ -286,16 +299,18 @@ def save_position(
 ) -> int:
     """保存一条持仓记录，返回本地 id。"""
     conn = _get_conn()
-    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    cur = conn.execute(
-        "INSERT INTO positions (symbol, side, entry_price, size, leverage, score, tp_order_id, sl_order_id, status, opened_at, mode) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'open', ?, ?)",
-        (symbol, side, entry_price, size, leverage, score, tp_order_id, sl_order_id, now, mode),
-    )
-    row_id = cur.lastrowid
-    conn.commit()
-    conn.close()
-    return row_id
+    try:
+        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        cur = conn.execute(
+            "INSERT INTO positions (symbol, side, entry_price, size, leverage, score, tp_order_id, sl_order_id, status, opened_at, mode) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'open', ?, ?)",
+            (symbol, side, entry_price, size, leverage, score, tp_order_id, sl_order_id, now, mode),
+        )
+        row_id = cur.lastrowid
+        conn.commit()
+        return row_id
+    finally:
+        conn.close()
 
 
 def close_position(
@@ -307,88 +322,100 @@ def close_position(
 ) -> None:
     """关闭某币种的持仓。"""
     conn = _get_conn()
-    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    conn.execute(
-        "UPDATE positions SET status = 'closed', closed_at = ?, "
-        "exit_price = ?, pnl = ?, pnl_pct = ?, exit_reason = ? "
-        "WHERE symbol = ? AND status = 'open'",
-        (now, exit_price, pnl, pnl_pct, exit_reason, symbol),
-    )
-    conn.commit()
-    conn.close()
+    try:
+        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        conn.execute(
+            "UPDATE positions SET status = 'closed', closed_at = ?, "
+            "exit_price = ?, pnl = ?, pnl_pct = ?, exit_reason = ? "
+            "WHERE symbol = ? AND status = 'open'",
+            (now, exit_price, pnl, pnl_pct, exit_reason, symbol),
+        )
+        conn.commit()
+    finally:
+        conn.close()
 
 
 def get_open_positions() -> list[dict]:
     """获取所有 status='open' 的持仓。"""
     conn = _get_conn()
-    rows = conn.execute(
-        "SELECT * FROM positions WHERE status = 'open' ORDER BY opened_at",
-    ).fetchall()
-    conn.close()
-    return [dict(r) for r in rows]
+    try:
+        rows = conn.execute(
+            "SELECT * FROM positions WHERE status = 'open' ORDER BY opened_at",
+        ).fetchall()
+        return [dict(r) for r in rows]
+    finally:
+        conn.close()
 
 
 def get_order_by_id(order_id: str) -> dict | None:
     """按 order_id 查询单条订单。"""
     conn = _get_conn()
-    row = conn.execute(
-        "SELECT * FROM orders WHERE order_id = ?", (order_id,)
-    ).fetchone()
-    conn.close()
-    return dict(row) if row else None
+    try:
+        row = conn.execute(
+            "SELECT * FROM orders WHERE order_id = ?", (order_id,)
+        ).fetchone()
+        return dict(row) if row else None
+    finally:
+        conn.close()
 
 
 def get_closed_trades() -> list[dict]:
     """获取所有已关闭且有盈亏记录的持仓。"""
     conn = _get_conn()
-    rows = conn.execute(
-        "SELECT * FROM positions WHERE status = 'closed' AND pnl_pct IS NOT NULL "
-        "ORDER BY closed_at DESC"
-    ).fetchall()
-    conn.close()
-    return [dict(r) for r in rows]
+    try:
+        rows = conn.execute(
+            "SELECT * FROM positions WHERE status = 'closed' AND pnl_pct IS NOT NULL "
+            "ORDER BY closed_at DESC"
+        ).fetchall()
+        return [dict(r) for r in rows]
+    finally:
+        conn.close()
 
 
 def get_closed_trades_by_symbol(symbol: str) -> list[dict]:
     """获取指定币种所有已关闭且有盈亏记录的持仓。"""
     conn = _get_conn()
-    rows = conn.execute(
-        "SELECT * FROM positions WHERE status = 'closed' AND pnl_pct IS NOT NULL "
-        "AND symbol = ? ORDER BY closed_at DESC",
-        (symbol,),
-    ).fetchall()
-    conn.close()
-    return [dict(r) for r in rows]
+    try:
+        rows = conn.execute(
+            "SELECT * FROM positions WHERE status = 'closed' AND pnl_pct IS NOT NULL "
+            "AND symbol = ? ORDER BY closed_at DESC",
+            (symbol,),
+        ).fetchall()
+        return [dict(r) for r in rows]
+    finally:
+        conn.close()
 
 
 def get_tracked_symbols() -> list[dict]:
     """获取所有被跟踪的币种及其出现次数、最新价格和最新得分"""
     conn = _get_conn()
-    rows = conn.execute("""
-        WITH ranked AS (
+    try:
+        rows = conn.execute("""
+            WITH ranked AS (
+                SELECT
+                    r.symbol,
+                    r.price,
+                    r.score,
+                    s.scan_time,
+                    ROW_NUMBER() OVER (PARTITION BY r.symbol ORDER BY s.scan_time DESC) AS rn_last,
+                    ROW_NUMBER() OVER (PARTITION BY r.symbol ORDER BY s.scan_time ASC) AS rn_first
+                FROM scan_results r
+                JOIN scans s ON r.scan_id = s.id
+            )
             SELECT
-                r.symbol,
-                r.price,
-                r.score,
-                s.scan_time,
-                ROW_NUMBER() OVER (PARTITION BY r.symbol ORDER BY s.scan_time DESC) AS rn_last,
-                ROW_NUMBER() OVER (PARTITION BY r.symbol ORDER BY s.scan_time ASC) AS rn_first
-            FROM scan_results r
-            JOIN scans s ON r.scan_id = s.id
-        )
-        SELECT
-            symbol,
-            COUNT(*) AS times,
-            MAX(scan_time) AS last_seen,
-            MAX(CASE WHEN rn_last = 1 THEN price END) AS last_price,
-            MAX(CASE WHEN rn_first = 1 THEN price END) AS first_price,
-            MAX(CASE WHEN rn_last = 1 THEN score END) AS last_score
-        FROM ranked
-        GROUP BY symbol
-        ORDER BY times DESC
-    """).fetchall()
-    conn.close()
-    return [dict(r) for r in rows]
+                symbol,
+                COUNT(*) AS times,
+                MAX(scan_time) AS last_seen,
+                MAX(CASE WHEN rn_last = 1 THEN price END) AS last_price,
+                MAX(CASE WHEN rn_first = 1 THEN price END) AS first_price,
+                MAX(CASE WHEN rn_last = 1 THEN score END) AS last_score
+            FROM ranked
+            GROUP BY symbol
+            ORDER BY times DESC
+        """).fetchall()
+        return [dict(r) for r in rows]
+    finally:
+        conn.close()
 
 
 def get_today_scans(mode: str) -> list[dict]:
@@ -426,17 +453,19 @@ def get_today_scans(mode: str) -> list[dict]:
 def get_active_signals() -> list[dict]:
     """获取 lifecycle_state in ('detected', 'entered') 的活跃信号。"""
     conn = _get_conn()
-    rows = conn.execute("""
-        SELECT r.id, r.symbol, r.price, r.score, r.mode, r.signal_type,
-               r.entry_price, r.stop_loss_price, r.take_profit_price,
-               r.lifecycle_state, r.current_price, r.unrealized_pnl_pct,
-               r.price_updated_at, r.entered_at, r.score_breakdown,
-               s.scan_time
-        FROM scan_results r JOIN scans s ON r.scan_id = s.id
-        WHERE r.lifecycle_state IN ('detected', 'entered')
-        ORDER BY s.scan_time DESC
-    """).fetchall()
-    conn.close()
+    try:
+        rows = conn.execute("""
+            SELECT r.id, r.symbol, r.price, r.score, r.mode, r.signal_type,
+                   r.entry_price, r.stop_loss_price, r.take_profit_price,
+                   r.lifecycle_state, r.current_price, r.unrealized_pnl_pct,
+                   r.price_updated_at, r.entered_at, r.score_breakdown,
+                   s.scan_time
+            FROM scan_results r JOIN scans s ON r.scan_id = s.id
+            WHERE r.lifecycle_state IN ('detected', 'entered')
+            ORDER BY s.scan_time DESC
+        """).fetchall()
+    finally:
+        conn.close()
     import json as _json
     results = []
     for r in rows:
@@ -456,42 +485,48 @@ def get_active_signals() -> list[dict]:
 def update_signal_lifecycle(result_id: int, state: str, **kwargs) -> None:
     """更新信号生命周期状态。kwargs 可含 entered_at, closed_at, current_price, unrealized_pnl_pct 等。"""
     conn = _get_conn()
-    sets = ["lifecycle_state = ?"]
-    params: list = [state]
-    for col in ("entered_at", "closed_at", "current_price", "unrealized_pnl_pct", "price_updated_at"):
-        if col in kwargs:
-            sets.append(f"{col} = ?")
-            params.append(kwargs[col])
-    params.append(result_id)
-    conn.execute(f"UPDATE scan_results SET {', '.join(sets)} WHERE id = ?", params)
-    conn.commit()
-    conn.close()
+    try:
+        sets = ["lifecycle_state = ?"]
+        params: list = [state]
+        for col in ("entered_at", "closed_at", "current_price", "unrealized_pnl_pct", "price_updated_at"):
+            if col in kwargs:
+                sets.append(f"{col} = ?")
+                params.append(kwargs[col])
+        params.append(result_id)
+        conn.execute(f"UPDATE scan_results SET {', '.join(sets)} WHERE id = ?", params)
+        conn.commit()
+    finally:
+        conn.close()
 
 
 def get_signal_outcomes(days: int = 30) -> dict:
     """近 N 天信号结果分布统计。"""
     conn = _get_conn()
-    cutoff = (datetime.now() - __import__("datetime").timedelta(days=days)).strftime("%Y-%m-%d")
-    rows = conn.execute("""
-        SELECT r.lifecycle_state, COUNT(*) as cnt
-        FROM scan_results r JOIN scans s ON r.scan_id = s.id
-        WHERE s.scan_time >= ?
-        GROUP BY r.lifecycle_state
-    """, (cutoff,)).fetchall()
-    conn.close()
-    return {r["lifecycle_state"]: r["cnt"] for r in rows}
+    try:
+        cutoff = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d")
+        rows = conn.execute("""
+            SELECT r.lifecycle_state, COUNT(*) as cnt
+            FROM scan_results r JOIN scans s ON r.scan_id = s.id
+            WHERE s.scan_time >= ?
+            GROUP BY r.lifecycle_state
+        """, (cutoff,)).fetchall()
+        return {r["lifecycle_state"]: r["cnt"] for r in rows}
+    finally:
+        conn.close()
 
 
 def get_signal_count_trend(days: int = 7) -> list[dict]:
     """近 N 天每天各模式信号数量趋势。"""
     conn = _get_conn()
-    cutoff = (datetime.now() - __import__("datetime").timedelta(days=days)).strftime("%Y-%m-%d")
-    rows = conn.execute("""
-        SELECT DATE(s.scan_time) as day, r.mode, COUNT(*) as cnt
-        FROM scan_results r JOIN scans s ON r.scan_id = s.id
-        WHERE s.scan_time >= ?
-        GROUP BY DATE(s.scan_time), r.mode
-        ORDER BY day
-    """, (cutoff,)).fetchall()
-    conn.close()
-    return [dict(r) for r in rows]
+    try:
+        cutoff = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d")
+        rows = conn.execute("""
+            SELECT DATE(s.scan_time) as day, r.mode, COUNT(*) as cnt
+            FROM scan_results r JOIN scans s ON r.scan_id = s.id
+            WHERE s.scan_time >= ?
+            GROUP BY DATE(s.scan_time), r.mode
+            ORDER BY day
+        """, (cutoff,)).fetchall()
+        return [dict(r) for r in rows]
+    finally:
+        conn.close()

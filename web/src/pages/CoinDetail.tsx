@@ -16,7 +16,7 @@ import ScoreBreakdown from "../components/ScoreBreakdown";
 
 export default function CoinDetail() {
   const { symbol: symbolSlug } = useParams<{ symbol: string }>();
-  const symbol = (symbolSlug ?? "").replace("-", "/").toUpperCase();
+  const symbol = (symbolSlug ?? "").replace(/-/g, "/").toUpperCase();
 
   const [scans, setScans] = useState<Signal[]>([]);
   const [trades, setTrades] = useState<Position[]>([]);
@@ -99,8 +99,8 @@ export default function CoinDetail() {
                   </tr>
                 </thead>
                 <tbody>
-                  {scans.map((s, i) => (
-                    <tr key={i} className="border-b border-slate-800/50 hover:bg-slate-800/30 transition-colors">
+                  {scans.map((s) => (
+                    <tr key={`${s.scan_time}-${s.mode}`} className="border-b border-slate-800/50 hover:bg-slate-800/30 transition-colors">
                       <td className="py-2 px-4 text-xs font-mono text-slate-400">{(s.scan_time ?? "").slice(0, 16)}</td>
                       <td className="py-2 px-4">
                         <span className={`text-xs px-1.5 py-0.5 rounded ${modeColor(s.mode)}`}>

@@ -1,8 +1,10 @@
+import logging
 import time
 
 import ccxt
 import pandas as pd
 
+logger = logging.getLogger(__name__)
 
 _exchange = None
 _usdm = None
@@ -110,7 +112,7 @@ def fetch_klines_batch(symbols: list[str], days: int = 30, delay: float = 0.5) -
     total = len(symbols)
     for i, symbol in enumerate(symbols, 1):
         if i % 50 == 1 or i == total:
-            print(f"       K线拉取进度: {i}/{total}，已获取{len(results)}个")
+            logger.info("K线拉取进度: %d/%d，已获取%d个", i, total, len(results))
         df = fetch_klines(symbol, days)
         if df is not None and len(df) >= 7:
             results[symbol] = df
@@ -124,5 +126,6 @@ def fetch_ticker_price(symbol: str) -> float | None:
         exchange = _get_exchange()
         ticker = exchange.fetch_ticker(symbol)
         return float(ticker["last"]) if ticker and ticker.get("last") else None
-    except Exception:
+    except Exception as exc:
+        logger.warning("fetch_ticker_price %s failed: %s", symbol, exc)
         return None

@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   AreaChart,
   Area,
@@ -30,17 +30,25 @@ export default function Performance() {
 
   const { overall, by_mode, by_score, by_month, cumulative_pnl } = data;
 
-  const modeData = Object.entries(by_mode).map(([mode, s]) => ({
-    mode: MODE_LABELS[mode] ?? mode,
-    win_rate: +(s.win_rate * 100).toFixed(1),
-    total: s.total,
-  }));
+  const modeData = useMemo(
+    () =>
+      Object.entries(by_mode).map(([mode, s]) => ({
+        mode: MODE_LABELS[mode] ?? mode,
+        win_rate: +(s.win_rate * 100).toFixed(1),
+        total: s.total,
+      })),
+    [by_mode],
+  );
 
-  const scoreData = Object.entries(by_score).map(([tier, s]) => ({
-    tier,
-    win_rate: +(s.win_rate * 100).toFixed(1),
-    total: s.total,
-  }));
+  const scoreData = useMemo(
+    () =>
+      Object.entries(by_score).map(([tier, s]) => ({
+        tier,
+        win_rate: +(s.win_rate * 100).toFixed(1),
+        total: s.total,
+      })),
+    [by_score],
+  );
 
   return (
     <div className="space-y-6">
@@ -110,8 +118,8 @@ export default function Performance() {
                   <YAxis type="category" dataKey="mode" tick={{ fill: "#94a3b8", fontSize: 12 }} axisLine={false} tickLine={false} width={50} />
                   <Tooltip contentStyle={{ backgroundColor: "#1e293b", border: "1px solid #334155", borderRadius: 8, fontSize: 12 }} formatter={(v: number) => [`${v}%`, "胜率"]} />
                   <Bar dataKey="win_rate" radius={[0, 6, 6, 0]}>
-                    {modeData.map((_, i) => (
-                      <Cell key={i} fill={MODE_COLORS[i] ?? "#64748b"} />
+                    {modeData.map((m, i) => (
+                      <Cell key={m.mode} fill={MODE_COLORS[i] ?? "#64748b"} />
                     ))}
                   </Bar>
                 </BarChart>
@@ -189,5 +197,5 @@ function MiniKpi({ label, value, color }: { label: string; value: string; color?
   );
 }
 
-const MODE_LABELS: Record<string, string> = { accumulation: "蓄力", divergence: "背离", breakout: "突破" };
-const MODE_COLORS = ["#3b82f6", "#8b5cf6", "#f97316"];
+const MODE_LABELS: Record<string, string> = { accumulation: "蓄力", divergence: "背离", breakout: "突破", smc: "SMC" };
+const MODE_COLORS = ["#3b82f6", "#8b5cf6", "#f97316", "#14b8a6"];

@@ -9,13 +9,13 @@ export async function get<T>(path: string, params?: Record<string, string | unde
   }
   const res = await fetch(url.toString());
   if (!res.ok) throw new Error(`API ${res.status}: ${res.statusText}`);
-  return res.json() as Promise<T>;
+  return (await res.json()) as T;
 }
 
 export async function post<T>(path: string): Promise<T> {
   const res = await fetch(BASE + path, { method: "POST" });
   if (!res.ok) throw new Error(`API ${res.status}: ${res.statusText}`);
-  return res.json() as Promise<T>;
+  return (await res.json()) as T;
 }
 
 // ── Types ──

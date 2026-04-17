@@ -336,10 +336,12 @@ function SignalDetailCard({
           <button
             onClick={(e) => {
               e.stopPropagation();
-              copyTradeParams(signal).then(() => {
-                setCopied(true);
-                setTimeout(() => setCopied(false), 2000);
-              });
+              copyTradeParams(signal)
+                .then(() => {
+                  setCopied(true);
+                  setTimeout(() => setCopied(false), 2000);
+                })
+                .catch(() => {});
             }}
             className="flex items-center gap-1 px-2 py-1 rounded text-xs text-slate-400 hover:text-blue-400 hover:bg-blue-500/10 transition-colors"
           >
