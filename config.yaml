@@ -13,6 +13,11 @@ breakout:
   reattack_multiplier: 2.0
   shrink_threshold: 0.3
   spike_multiplier: 5.0
+  min_score: 0.6
+  top_n: 20
+
+divergence:
+  min_score: 0.7
   top_n: 20
 listing_intel:
   dexscreener_delay: 0.35
@@ -61,6 +66,7 @@ scanner:
   max_daily_change: 0.05
   max_market_cap: 1000000000
   max_pages: 100
+  min_score: 0.6
   page_delay: 30
   skip_market_cap_filter: true
   top_n: 20

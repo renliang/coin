@@ -89,6 +89,8 @@ def load_config(
         scanner_cfg["breakout"] = raw["breakout"]
     if "smc" in raw:
         scanner_cfg["smc"] = raw["smc"]
+    if "divergence" in raw:
+        scanner_cfg["divergence"] = raw["divergence"]
 
     # trading config
     t = raw.get("trading", {})
@@ -137,6 +139,11 @@ def load_config(
 def run(config: dict, signal_config: SignalConfig, top_n: int | None = None, symbols_override: list[str] | None = None):
     top_n = top_n or config.get("top_n", 20)
     max_market_cap = config.get("max_market_cap", 100_000_000)
+
+    # accumulation 可单独设置 min_score（否则沿用 signal.min_score 主阈值）
+    accum_min_score = config.get("min_score")
+    if accum_min_score is not None and accum_min_score != signal_config.min_score:
+        signal_config = replace(signal_config, min_score=accum_min_score)
 
     # Step 1: 获取交易对列表（Binance U本位永续 base ∩ Binance 现货）
     if symbols_override:
@@ -364,8 +371,14 @@ def run(config: dict, signal_config: SignalConfig, top_n: int | None = None, sym
 
 def run_divergence(config: dict, signal_config: SignalConfig, top_n: int | None = None, symbols_override: list[str] | None = None) -> list[TradeSignal]:
     from scanner.divergence import detect_divergence
-    top_n = top_n or config.get("top_n", 20)
+    div_cfg = config.get("divergence", {}) if isinstance(config.get("divergence"), dict) else {}
+    top_n = top_n or div_cfg.get("top_n") or config.get("top_n", 20)
     max_market_cap = config.get("max_market_cap", 100_000_000)
+
+    # divergence 可单独设置 min_score（否则沿用 signal.min_score 主阈值）
+    div_min_score = div_cfg.get("min_score")
+    if div_min_score is not None and div_min_score != signal_config.min_score:
+        signal_config = replace(signal_config, min_score=div_min_score)
 
     # Step 1: 获取交易对列表
     if symbols_override:
@@ -579,6 +592,11 @@ def run_breakout(config: dict, signal_config: SignalConfig, top_n: int | None = 
     breakout_cfg = config.get("breakout", {})
     top_n = top_n or breakout_cfg.get("top_n", 20)
     max_market_cap = config.get("max_market_cap", 100_000_000)
+
+    # breakout 可单独设置 min_score（否则沿用 signal.min_score 主阈值）
+    breakout_min_score = breakout_cfg.get("min_score")
+    if breakout_min_score is not None and breakout_min_score != signal_config.min_score:
+        signal_config = replace(signal_config, min_score=breakout_min_score)
 
     # Step 1: 获取交易对列表
     if symbols_override:
