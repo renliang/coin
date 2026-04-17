@@ -10,6 +10,7 @@ import ccxt
 
 from scanner.signal import TradeSignal
 from scanner.tracker import save_order, save_position, update_order_status
+from scanner.trader.position_mode import position_side_params
 
 logger = logging.getLogger("trader.executor")
 
@@ -44,7 +45,7 @@ def execute_trade(
     symbol = signal.symbol
     is_short = signal.signal_type == "顶背离"
     side = "sell" if is_short else "buy"
-    position_side = "SHORT" if is_short else "LONG"
+    ps_params = position_side_params(is_short, exchange)
 
     # 1. 设置杠杆
     try:
@@ -62,7 +63,7 @@ def execute_trade(
             side=side,
             amount=amount,
             price=signal.entry_price,
-            params={"positionSide": position_side},
+            params=ps_params,
         ))
         order_id = order["id"]
         logger.info("[%s] 限价单已下: %s %s %.4f @ %.4f, order_id=%s",
@@ -100,7 +101,7 @@ def execute_trade(
             amount=amount,
             params={
                 "stopPrice": signal.take_profit_price,
-                "positionSide": position_side,
+                **ps_params,
             },
         ))
         tp_order_id = tp_order["id"]
@@ -119,7 +120,7 @@ def execute_trade(
                 amount=amount,
                 params={
                     "stopPrice": signal.stop_loss_price,
-                    "positionSide": position_side,
+                    **ps_params,
                 },
             ))
             sl_order_id = sl_order["id"]

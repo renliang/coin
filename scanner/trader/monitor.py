@@ -13,6 +13,7 @@ from scanner.tracker import (
     save_order,
     get_order_by_id,
 )
+from scanner.trader.position_mode import position_side_params
 
 logger = logging.getLogger("trader.monitor")
 
@@ -79,11 +80,13 @@ def _handle_timeout(
     remaining = amount - filled
     if remaining > 0:
         try:
+            is_short = side == "sell"
             market_order = exchange.create_order(
                 symbol=symbol,
                 type="market",
                 side=side,
                 amount=remaining,
+                params=position_side_params(is_short, exchange),
             )
             save_order(
                 order_id=market_order["id"],
