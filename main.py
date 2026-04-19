@@ -1311,11 +1311,12 @@ def run_serve(
         logger.info("=== 启动扫描结束 ===")
 
     def daily_scan():
-        """每天 cron 触发：扫描 + 背离 top 2 下单。"""
+        """每天 cron 触发：扫描 + 背离 top N 下单（N=max_positions）。"""
         logger.info("=== 定时扫描开始（四模式 + 下单）===")
         div_signals = _scan_all_modes()
         if div_signals and trading_config.enabled:
-            top_signals = sorted(div_signals, key=lambda s: s.score, reverse=True)[:2]
+            top_n = trading_config.max_positions
+            top_signals = sorted(div_signals, key=lambda s: s.score, reverse=True)[:top_n]
             logger.info("背离信号 %d 个，挂单 top %d (按 score 排序)", len(div_signals), len(top_signals))
             execute_trading_pipeline(top_signals, trading_config)
         elif not trading_config.enabled:
