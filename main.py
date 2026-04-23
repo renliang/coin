@@ -769,10 +769,13 @@ def run_breakout(config: dict, signal_config: SignalConfig, top_n: int | None = 
     print(f"结果已保存到 {json_path} 和 {txt_path}")
 
 
-def run_trend(config: dict, top_n: int | None = None, symbols_override: list[str] | None = None):
-    """趋势跟踪扫描 (Phase 1b) — 基于当前持仓状态出 entry/pyramid/exit 三类信号。
+def run_trend(config: dict, top_n: int | None = None, symbols_override: list[str] | None = None,
+              paper: bool = False):
+    """趋势跟踪扫描 (Phase 1b + paper 模式) — 产出 entry/pyramid/exit 三类信号。
 
-    只打印不下单。Phase 2 会接入真实执行器。
+    paper=False (默认): 仅打印信号, 不写 DB。
+    paper=True: 把信号应用到虚拟持仓 DB (不下真单), 并更新 trailing_high。
+                用于"跟单"方式验证信号质量, 对比回测预期。
     """
     from datetime import datetime
     from scanner.trend_scanner import scan_trend_actions
@@ -887,7 +890,40 @@ def run_trend(config: dict, top_n: int | None = None, symbols_override: list[str
         else:
             print(f"\n   当日无信号。\n")
 
-    print(f"\n   Phase 1b: 仅打印信号，未下单。")
+    # ── Paper 模式: 应用动作 + 更新 trailing_high + 打印 NAV ──
+    if paper:
+        from scanner.trend_paper import (
+            paper_execute, update_all_trailing_highs, compute_paper_nav,
+        )
+        today = datetime.utcnow().strftime("%Y-%m-%d")
+        level_capital = 1.0 / max_positions
+        applied = paper_execute(result, today=today, level_capital=level_capital)
+        n_updated = update_all_trailing_highs(klines)
+        nav_info = compute_paper_nav(klines)
+
+        print(f"\n📝 Paper 执行 @ {today}")
+        print(f"   平仓 {len(applied['closed'])} | 加仓 {len(applied['added'])} | "
+              f"开仓 {len(applied['opened'])} | trailing_high 上调 {n_updated}")
+        if applied["closed"]:
+            for a in applied["closed"]:
+                print(f"   🔴 CLOSE {a['symbol']} @ {a['price']:.6g}  "
+                      f"原因={a['reason']}  PnL={a['pnl_pct']*100:+.2f}%  层数={a['levels']}")
+        if applied["added"]:
+            for a in applied["added"]:
+                print(f"   🟡 PYRAMID {a['symbol']} @ {a['price']:.6g}  "
+                      f"→ 层数={a['new_level']}")
+        if applied["opened"]:
+            for a in applied["opened"]:
+                print(f"   🟢 OPEN {a['symbol']} @ {a['price']:.6g}  ATR={a['atr']:.6g}")
+
+        print(f"\n💰 Paper 组合 NAV: {nav_info['nav']:.4f}  "
+              f"(已实现 {nav_info['realized_contrib']*100:+.2f}% | "
+              f"未实现 {nav_info['unrealized_contrib']*100:+.2f}%)")
+        print(f"   持仓 {nav_info['n_open']} 个 / 已平仓 {nav_info['n_closed']} 笔")
+        print(f"\n   Paper mode: DB 已更新, 未下真单。")
+    else:
+        print(f"\n   Phase 1b: 仅打印信号，未下单 (加 --paper 可启用虚拟执行)。")
+
     print(f"   参数: entry_n={entry_n}, exit_n={exit_n}, trend_ema={trend_ema}, "
           f"btc_trend_ema={btc_trend_ema}, chandelier={chandelier_mult}, "
           f"pyramid={pyramid_levels}, atr_k={atr_pyramid_mult}, max_pos={max_positions}")

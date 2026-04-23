@@ -25,6 +25,8 @@ def main(argv: list[str] | None = None) -> None:
     p_scan.add_argument("--top", type=int, help="输出前 N 个结果")
     p_scan.add_argument("--symbols", nargs="+", help="直接指定交易对")
     p_scan.add_argument("--no-confirm", action="store_true", help="关闭多指标共振过滤")
+    p_scan.add_argument("--paper", action="store_true",
+                        help="[trend 专用] 虚拟执行: 把信号写入持仓 DB 但不下真单")
 
     # ── backtest ──────────────────────────────────────────
     p_bt = sub.add_parser("backtest", help="回测验证形态有效性")
@@ -126,7 +128,8 @@ def main(argv: list[str] | None = None) -> None:
             # CLI 手动扫描只刷数据，不自动下单。下单由 serve 模式的每日 cron 统一负责。
             run_divergence(config, signal_config, top_n=args.top, symbols_override=args.symbols)
         elif args.mode == "trend":
-            run_trend(config, top_n=args.top, symbols_override=args.symbols)
+            run_trend(config, top_n=args.top, symbols_override=args.symbols,
+                      paper=args.paper)
         else:
             run(config, signal_config, top_n=args.top, symbols_override=args.symbols)
 
