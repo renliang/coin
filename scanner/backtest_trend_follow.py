@@ -80,6 +80,9 @@ class TrendBacktestResult:
     pyramid_levels: int = 3
     atr_pyramid_mult: float = 1.0
     atr_period: int = 14
+    chandelier_mult: float = 0.0        # 0 = 禁用; 3.0 经典
+    n_chandelier_stops: int = 0
+    n_donchian_stops: int = 0
 
 
 def _max_drawdown(equity: list[float]) -> float:
@@ -118,6 +121,7 @@ def run_trend_backtest(
     pyramid_levels: int = 3,
     atr_pyramid_mult: float = 1.0,
     atr_period: int = 14,
+    chandelier_mult: float = 0.0,
 ) -> TrendBacktestResult:
     """趋势跟踪 + 金字塔日级事件驱动回测。
 
@@ -130,6 +134,7 @@ def run_trend_backtest(
             entry_n=entry_n, exit_n=exit_n, trend_ema=trend_ema,
             max_positions=max_positions, pyramid_levels=pyramid_levels,
             atr_pyramid_mult=atr_pyramid_mult, atr_period=atr_period,
+            chandelier_mult=chandelier_mult,
         )
 
     timeline = max(len(df) for df in klines.values())
@@ -140,6 +145,7 @@ def run_trend_backtest(
             entry_n=entry_n, exit_n=exit_n, trend_ema=trend_ema,
             max_positions=max_positions, pyramid_levels=pyramid_levels,
             atr_pyramid_mult=atr_pyramid_mult, atr_period=atr_period,
+            chandelier_mult=chandelier_mult,
         )
 
     level_capital = 1.0 / max_positions
@@ -152,51 +158,70 @@ def run_trend_backtest(
     n_losing = 0
     max_concurrent = 0
     max_pyramid_reached = 0
+    n_chandelier_stops = 0
+    n_donchian_stops = 0
 
     # 初始 equity (warmup 之前)
     equity.append(1.0)
 
     for idx in range(warmup, timeline):
-        # ── Step 1: 对每个持仓检查止损 ──
+        # ── Step 1a: 先更新每个持仓的 trailing_high (用今日 close) ──
+        for symbol, pos in positions.items():
+            df = klines.get(symbol)
+            if df is None or len(df) <= idx:
+                continue
+            close_today = float(df["close"].iloc[idx])
+            if close_today > pos.trailing_high:
+                pos.trailing_high = close_today
+
+        # ── Step 1b: 对每个持仓检查止损 (Donchian + Chandelier 取更紧) ──
         to_close: list[str] = []
         for symbol, pos in positions.items():
             df = klines.get(symbol)
             if df is None or len(df) <= idx:
                 continue
             close = float(df["close"].iloc[idx])
-            # 跌破过去 exit_n 日低点
+            # Donchian 低点止损
             ex_low = donchian_low(df["close"], exit_n, up_to=idx - 1, exclude_current=True)
-            if not math.isnan(ex_low) and close < ex_low:
-                # 全平
+            donchian_trigger = (not math.isnan(ex_low)) and close < ex_low
+            # Chandelier trailing stop
+            chandelier_trigger = False
+            if chandelier_mult > 0:
+                a = atr(df, period=atr_period, up_to=idx)
+                chandelier_stop = pos.trailing_high - chandelier_mult * a
+                chandelier_trigger = close < chandelier_stop
+            if donchian_trigger or chandelier_trigger:
                 pnl = sum(e.units * (close - e.price) for e in pos.entries)
                 realized_pnl += pnl
-                # 交易收益率 = pnl / 总成本
                 cost = pos.total_cost
                 trade_ret = pnl / cost if cost > 0 else 0.0
                 trade_returns.append(trade_ret)
-                # 持仓天数 = 最后平仓 idx - 第一次入场 idx
                 first_entry_idx = min(e.idx for e in pos.entries)
                 holding_days.append(idx - first_entry_idx)
                 if pnl > 0:
                     n_winning += 1
                 else:
                     n_losing += 1
+                # 统计哪种止损先触发 (chandelier 优先级, 因为它更紧)
+                if chandelier_trigger and not donchian_trigger:
+                    n_chandelier_stops += 1
+                elif donchian_trigger and not chandelier_trigger:
+                    n_donchian_stops += 1
+                elif chandelier_trigger and donchian_trigger:
+                    n_chandelier_stops += 1  # 同时触发归为 chandelier
                 to_close.append(symbol)
         for s in to_close:
             del positions[s]
 
-        # ── Step 2: 金字塔加仓 (对未被平仓的持仓) ──
+        # ── Step 2: 金字塔加仓 (对未被平仓的持仓; trailing_high 已在 Step 1a 更新) ──
         for symbol, pos in positions.items():
             df = klines.get(symbol)
             if df is None or len(df) <= idx:
                 continue
             close = float(df["close"].iloc[idx])
-            # 更新 trailing_high
-            if close > pos.trailing_high:
-                pos.trailing_high = close
             if pos.levels >= pyramid_levels:
                 continue
-            # 条件: 今日创持仓期间新高 + 浮盈 ≥ levels * k * ATR
+            # 条件: 今日即持仓期间新高 (close == trailing_high) + 浮盈 ≥ levels × k × ATR
             if close < pos.trailing_high:
                 continue
             a = atr(df, period=atr_period, up_to=idx)
@@ -308,4 +333,7 @@ def run_trend_backtest(
         pyramid_levels=pyramid_levels,
         atr_pyramid_mult=atr_pyramid_mult,
         atr_period=atr_period,
+        chandelier_mult=chandelier_mult,
+        n_chandelier_stops=n_chandelier_stops,
+        n_donchian_stops=n_donchian_stops,
     )

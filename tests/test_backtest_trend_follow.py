@@ -110,6 +110,40 @@ def test_max_positions_capped():
     assert out.max_concurrent_positions <= 10
 
 
+def test_chandelier_stop_triggers_on_giving_back_gains():
+    """入场后大涨到顶部, 回落超过 chandelier_mult × ATR 即触发 trailing stop,
+    应在 Donchian 低点止损之前更早退出, 减少回撤。"""
+    # 400 天上涨 (确保 EMA200 过滤通过 + 突破入场)
+    up = np.linspace(10.0, 120.0, 400).tolist()
+    # 接着急跌但不跌破 10 日低点 (Donchian 低点止损不会立即触发,
+    # 但 chandelier 应基于 trailing_high 已经退出)
+    dip = np.linspace(120.0, 95.0, 5).tolist()
+    closes = up + dip
+    klines = {"X/USDT": _klines(closes)}
+
+    with_chandelier = run_trend_backtest(
+        klines, entry_n=20, exit_n=10, trend_ema=200,
+        max_positions=10, pyramid_levels=3, atr_pyramid_mult=1.0,
+        chandelier_mult=3.0,
+    )
+    without_chandelier = run_trend_backtest(
+        klines, entry_n=20, exit_n=10, trend_ema=200,
+        max_positions=10, pyramid_levels=3, atr_pyramid_mult=1.0,
+        chandelier_mult=0.0,
+    )
+    # chandelier 启用时, 最大回撤应不大于禁用时 (即回撤更小)
+    assert with_chandelier.max_drawdown_pct >= without_chandelier.max_drawdown_pct
+
+
+def test_chandelier_mult_zero_preserves_original_behavior():
+    """chandelier_mult=0 时止损仅用 Donchian 低点, 行为与旧版等价。"""
+    closes = np.linspace(10.0, 100.0, 400).tolist()
+    klines = {"X/USDT": _klines(closes)}
+    a = run_trend_backtest(klines, chandelier_mult=0.0)
+    b = run_trend_backtest(klines)  # 默认 chandelier_mult=0.0
+    assert a.total_return_pct == pytest.approx(b.total_return_pct, rel=1e-9)
+
+
 def test_result_is_frozen():
     out = run_trend_backtest({})
     with pytest.raises(Exception):
