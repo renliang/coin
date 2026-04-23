@@ -140,6 +140,25 @@ def test_annualized_return_matches_short_backtest():
         assert out.annualized_return_pct > out.total_return_pct
 
 
+def test_handles_mixed_length_klines():
+    """真实市场场景: 部分币新上市, DataFrame 长度不等。
+    短 DataFrame 的币在数据不足时应被自动跳过, 不能拖死整个回测。
+    """
+    long_closes = np.linspace(100.0, 200.0, 200).tolist()     # 200 天
+    short_closes = np.linspace(100.0, 150.0, 40).tolist()     # 只有 40 天 (< warmup 51)
+    klines = {
+        "OLD1/USDT": _klines_from_close(long_closes),
+        "OLD2/USDT": _klines_from_close(long_closes),
+        "OLD3/USDT": _klines_from_close(long_closes),
+        "NEW/USDT": _klines_from_close(short_closes),
+    }
+    out = run_momentum_backtest(klines, lookback_days=30, trend_ma_period=50,
+                                top_n=3, rebalance_every_days=7)
+    # 用最长 df 作时间轴, 200-51=149 天可回测 → 至少 20 期
+    assert out.n_rebalances > 15
+    assert out.total_return_pct > 0
+
+
 def test_result_is_frozen():
     out = run_momentum_backtest({}, lookback_days=30, trend_ma_period=50, top_n=10,
                                 rebalance_every_days=7)

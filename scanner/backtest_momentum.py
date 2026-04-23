@@ -34,11 +34,15 @@ class MomentumBacktestResult:
     rebalance_every_days: int = 7
 
 
-def _common_length(klines: dict[str, pd.DataFrame]) -> int:
-    """所有 symbol 中最短的 DataFrame 长度。"""
+def _timeline_length(klines: dict[str, pd.DataFrame]) -> int:
+    """以最长的 DataFrame 长度作为时间轴。
+
+    真实市场里各币上市时间不同，短 DataFrame 的币会在 _compute_one
+    里因数据不足被过滤。用 min 会让任何一个新币拖死整个回测。
+    """
     if not klines:
         return 0
-    return min(len(df) for df in klines.values())
+    return max(len(df) for df in klines.values())
 
 
 def _slice_klines(klines: dict[str, pd.DataFrame], end_idx: int) -> dict[str, pd.DataFrame]:
@@ -125,7 +129,7 @@ def run_momentum_backtest(
     Returns:
         MomentumBacktestResult - 含周期收益列表、equity 曲线和汇总指标。
     """
-    n = _common_length(klines)
+    n = _timeline_length(klines)
     warmup = max(lookback_days, trend_ma_period) + 1
     # 至少要有一期可回测: warmup + rebalance_every_days
     if n < warmup + rebalance_every_days or not klines:
