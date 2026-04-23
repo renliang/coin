@@ -85,6 +85,8 @@ class TrendBacktestResult:
     n_donchian_stops: int = 0
     btc_trend_ema: int = 0               # 0 = 禁用 regime filter
     n_days_btc_blocked: int = 0          # BTC 弱势被拦截的天数
+    btc_exit_on_weak: bool = False       # BTC 转弱时是否强平现有持仓
+    n_regime_exits: int = 0              # 因 regime filter 触发的强平次数
 
 
 def _max_drawdown(equity: list[float]) -> float:
@@ -126,6 +128,7 @@ def run_trend_backtest(
     chandelier_mult: float = 0.0,
     btc_df: pd.DataFrame | None = None,
     btc_trend_ema: int = 200,
+    btc_exit_on_weak: bool = False,
 ) -> TrendBacktestResult:
     """趋势跟踪 + 金字塔日级事件驱动回测。
 
@@ -169,6 +172,7 @@ def run_trend_backtest(
     n_chandelier_stops = 0
     n_donchian_stops = 0
     n_days_btc_blocked = 0
+    n_regime_exits = 0
 
     # 初始 equity (warmup 之前)
     equity.append(1.0)
@@ -190,7 +194,8 @@ def run_trend_backtest(
             if close_today > pos.trailing_high:
                 pos.trailing_high = close_today
 
-        # ── Step 1b: 对每个持仓检查止损 (Donchian + Chandelier 取更紧) ──
+        # ── Step 1b: 对每个持仓检查止损 (Donchian + Chandelier + Regime 任一触发即平) ──
+        regime_trigger_today = btc_filter_on and (not btc_ok) and btc_exit_on_weak
         to_close: list[str] = []
         for symbol, pos in positions.items():
             df = klines.get(symbol)
@@ -206,7 +211,7 @@ def run_trend_backtest(
                 a = atr(df, period=atr_period, up_to=idx)
                 chandelier_stop = pos.trailing_high - chandelier_mult * a
                 chandelier_trigger = close < chandelier_stop
-            if donchian_trigger or chandelier_trigger:
+            if donchian_trigger or chandelier_trigger or regime_trigger_today:
                 pnl = sum(e.units * (close - e.price) for e in pos.entries)
                 realized_pnl += pnl
                 cost = pos.total_cost
@@ -218,13 +223,15 @@ def run_trend_backtest(
                     n_winning += 1
                 else:
                     n_losing += 1
-                # 统计哪种止损先触发 (chandelier 优先级, 因为它更紧)
-                if chandelier_trigger and not donchian_trigger:
+                # 归类: regime 触发且其他未触发 → regime_exit; 否则按 chandelier/donchian
+                if regime_trigger_today and not (donchian_trigger or chandelier_trigger):
+                    n_regime_exits += 1
+                elif chandelier_trigger and not donchian_trigger:
                     n_chandelier_stops += 1
                 elif donchian_trigger and not chandelier_trigger:
                     n_donchian_stops += 1
-                elif chandelier_trigger and donchian_trigger:
-                    n_chandelier_stops += 1  # 同时触发归为 chandelier
+                else:
+                    n_chandelier_stops += 1
                 to_close.append(symbol)
         for s in to_close:
             del positions[s]
@@ -355,4 +362,6 @@ def run_trend_backtest(
         n_donchian_stops=n_donchian_stops,
         btc_trend_ema=btc_trend_ema if btc_filter_on else 0,
         n_days_btc_blocked=n_days_btc_blocked,
+        btc_exit_on_weak=btc_exit_on_weak,
+        n_regime_exits=n_regime_exits,
     )

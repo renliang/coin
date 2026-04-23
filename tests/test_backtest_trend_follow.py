@@ -158,6 +158,44 @@ def test_btc_filter_blocks_entries_when_btc_weak():
     assert without_filter.n_trades >= 1
 
 
+def test_btc_exit_on_weak_closes_existing_positions():
+    """btc_exit_on_weak=True 时, BTC 转弱应立即强平所有持仓。"""
+    # 300 天单币强势 + 200 天持平 (仓位应在强势段开了)
+    closes = np.linspace(10.0, 100.0, 300).tolist() + [100.0] * 200
+    # BTC: 前 300 天强势, 后 200 天急跌到 EMA200 以下
+    btc_closes = np.linspace(20000.0, 80000.0, 300).tolist() + \
+                 np.linspace(80000.0, 10000.0, 200).tolist()
+
+    out_exit = run_trend_backtest(
+        {"X/USDT": _klines(closes)},
+        entry_n=20, exit_n=10, trend_ema=200,
+        max_positions=10, pyramid_levels=3, chandelier_mult=0.0,
+        btc_df=_klines(btc_closes), btc_trend_ema=200,
+        btc_exit_on_weak=True,
+    )
+    out_noexit = run_trend_backtest(
+        {"X/USDT": _klines(closes)},
+        entry_n=20, exit_n=10, trend_ema=200,
+        max_positions=10, pyramid_levels=3, chandelier_mult=0.0,
+        btc_df=_klines(btc_closes), btc_trend_ema=200,
+        btc_exit_on_weak=False,
+    )
+    # 启用 regime exit 应有至少一次因 BTC 转弱触发的平仓
+    assert out_exit.n_regime_exits > 0
+    assert out_noexit.n_regime_exits == 0
+
+
+def test_btc_exit_on_weak_default_false():
+    """默认 btc_exit_on_weak=False, 不改变原 regime filter 行为。"""
+    closes = np.linspace(10.0, 100.0, 400).tolist()
+    btc = _klines(np.linspace(20000.0, 60000.0, 400).tolist())
+    a = run_trend_backtest({"X/USDT": _klines(closes)}, btc_df=btc, btc_trend_ema=50)
+    b = run_trend_backtest({"X/USDT": _klines(closes)}, btc_df=btc, btc_trend_ema=50,
+                           btc_exit_on_weak=False)
+    assert a.total_return_pct == pytest.approx(b.total_return_pct)
+    assert a.n_regime_exits == b.n_regime_exits == 0
+
+
 def test_btc_filter_none_preserves_behavior():
     """btc_df=None 时行为不变。"""
     closes = np.linspace(10.0, 100.0, 400).tolist()
