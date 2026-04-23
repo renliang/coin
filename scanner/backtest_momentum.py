@@ -32,6 +32,17 @@ class MomentumBacktestResult:
     trend_ma_period: int = 50
     top_n: int = 10
     rebalance_every_days: int = 7
+    btc_trend_ema: int = 0      # 0 表示未启用大盘过滤
+    n_btc_blocked: int = 0       # 因 BTC 熊市被过滤掉的期数
+
+
+def _btc_is_bullish(btc_df: pd.DataFrame, idx: int, ema_period: int) -> bool:
+    """BTC 在 idx 时是否处于牛市 (close > EMA_period)。数据不足返回 False。"""
+    if len(btc_df) <= idx or idx < ema_period:
+        return False
+    closes = btc_df["close"].iloc[: idx + 1].astype(float)
+    ema = closes.ewm(span=ema_period, adjust=False).mean().iloc[-1]
+    return float(closes.iloc[-1]) > float(ema)
 
 
 def _timeline_length(klines: dict[str, pd.DataFrame]) -> int:
@@ -116,6 +127,8 @@ def run_momentum_backtest(
     trend_ma_period: int = 50,
     top_n: int = 10,
     rebalance_every_days: int = 7,
+    btc_df: pd.DataFrame | None = None,
+    btc_trend_ema: int = 200,
 ) -> MomentumBacktestResult:
     """运行周度再平衡 CSM 回测。
 
@@ -145,19 +158,26 @@ def run_momentum_backtest(
 
     period_returns: list[float] = []
     equity: list[float] = [1.0]
+    btc_filter_on = btc_df is not None and btc_trend_ema > 0
+    n_btc_blocked = 0
 
     entry_idx = warmup
     while entry_idx + rebalance_every_days <= n:
-        rank_input = _slice_klines(klines, entry_idx + 1)
-        top = rank_by_momentum(
-            rank_input,
-            lookback_days=lookback_days,
-            trend_ma_period=trend_ma_period,
-            top_n=top_n,
-        )
-        picks = [r.symbol for r in top]
         exit_idx = entry_idx + rebalance_every_days
-        ret = _period_return(klines, picks, entry_idx, exit_idx)
+        if btc_filter_on and not _btc_is_bullish(btc_df, entry_idx, btc_trend_ema):
+            # 大盘熊市 → 空仓, 当期收益 0
+            ret = 0.0
+            n_btc_blocked += 1
+        else:
+            rank_input = _slice_klines(klines, entry_idx + 1)
+            top = rank_by_momentum(
+                rank_input,
+                lookback_days=lookback_days,
+                trend_ma_period=trend_ma_period,
+                top_n=top_n,
+            )
+            picks = [r.symbol for r in top]
+            ret = _period_return(klines, picks, entry_idx, exit_idx)
         period_returns.append(ret)
         equity.append(equity[-1] * (1.0 + ret))
         entry_idx = exit_idx
@@ -185,4 +205,6 @@ def run_momentum_backtest(
         trend_ma_period=trend_ma_period,
         top_n=top_n,
         rebalance_every_days=rebalance_every_days,
+        btc_trend_ema=btc_trend_ema if btc_filter_on else 0,
+        n_btc_blocked=n_btc_blocked,
     )

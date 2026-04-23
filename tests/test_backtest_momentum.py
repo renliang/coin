@@ -140,6 +140,56 @@ def test_annualized_return_matches_short_backtest():
         assert out.annualized_return_pct > out.total_return_pct
 
 
+def test_btc_filter_zeros_out_when_btc_below_ema():
+    """BTC 趋势向下时, 策略应全期空仓 → 所有期收益为 0。"""
+    rising_closes = np.linspace(100.0, 200.0, 250).tolist()
+    klines = {f"S{i}/USDT": _klines_from_close(rising_closes) for i in range(3)}
+    # BTC 持续下跌: 起点远高于终点, EMA200 始终 > 当前价
+    btc_falling = _klines_from_close(np.linspace(80000.0, 20000.0, 250).tolist())
+
+    out = run_momentum_backtest(
+        klines,
+        lookback_days=30,
+        trend_ma_period=50,
+        top_n=3,
+        rebalance_every_days=7,
+        btc_df=btc_falling,
+        btc_trend_ema=20,
+    )
+    assert out.n_rebalances > 0
+    assert out.total_return_pct == pytest.approx(0.0, abs=1e-9)
+    assert all(r == pytest.approx(0.0, abs=1e-9) for r in out.period_returns)
+
+
+def test_btc_filter_passes_through_when_btc_strong():
+    """BTC 强势时, 策略 passthrough, 收益应与不开过滤一致。"""
+    rising_closes = np.linspace(100.0, 200.0, 250).tolist()
+    klines = {f"S{i}/USDT": _klines_from_close(rising_closes) for i in range(3)}
+    btc_rising = _klines_from_close(np.linspace(20000.0, 80000.0, 250).tolist())
+
+    with_btc = run_momentum_backtest(
+        klines, lookback_days=30, trend_ma_period=50, top_n=3,
+        rebalance_every_days=7, btc_df=btc_rising, btc_trend_ema=20,
+    )
+    without_btc = run_momentum_backtest(
+        klines, lookback_days=30, trend_ma_period=50, top_n=3,
+        rebalance_every_days=7,
+    )
+    assert with_btc.total_return_pct == pytest.approx(without_btc.total_return_pct, rel=1e-6)
+
+
+def test_btc_filter_none_preserves_original_behavior():
+    """btc_df=None 时不启用过滤, 行为等于不传。"""
+    closes = np.linspace(100.0, 200.0, 120).tolist()
+    klines = {f"S{i}/USDT": _klines_from_close(closes) for i in range(3)}
+
+    a = run_momentum_backtest(klines, lookback_days=30, trend_ma_period=50,
+                              top_n=3, rebalance_every_days=7, btc_df=None)
+    b = run_momentum_backtest(klines, lookback_days=30, trend_ma_period=50,
+                              top_n=3, rebalance_every_days=7)
+    assert a.total_return_pct == pytest.approx(b.total_return_pct)
+
+
 def test_handles_mixed_length_klines():
     """真实市场场景: 部分币新上市, DataFrame 长度不等。
     短 DataFrame 的币在数据不足时应被自动跳过, 不能拖死整个回测。
