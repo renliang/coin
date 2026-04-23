@@ -78,7 +78,7 @@ schedule:
   scan_time: 08:03
 trend_follow:
   # 🔒 默认 paper 模式; 设为 true 后 daily_scan 会真实下单 (谨慎!)
-  execute_live: false
+  execute_live: true
   notional_per_level: 20          # 每层仓位 USDT
   leverage: 10                     # 杠杆倍数
   safety_sl_multiplier: 5.0        # 保险 SL 距离 (entry - N × ATR), 兜底用
