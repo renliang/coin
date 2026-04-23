@@ -135,6 +135,38 @@ def test_chandelier_stop_triggers_on_giving_back_gains():
     assert with_chandelier.max_drawdown_pct >= without_chandelier.max_drawdown_pct
 
 
+def test_btc_filter_blocks_entries_when_btc_weak():
+    """BTC 在 EMA 下方时, 即使单币强势也不入场 (regime filter)。"""
+    rising = np.linspace(10.0, 100.0, 400).tolist()
+    # BTC 一路下跌: 60000 → 20000, EMA200 始终高于 close
+    btc_falling = _klines(np.linspace(60000.0, 20000.0, 400).tolist())
+
+    with_filter = run_trend_backtest(
+        {"X/USDT": _klines(rising)},
+        entry_n=20, exit_n=10, trend_ema=200,
+        max_positions=10, pyramid_levels=3,
+        btc_df=btc_falling, btc_trend_ema=200,
+    )
+    without_filter = run_trend_backtest(
+        {"X/USDT": _klines(rising)},
+        entry_n=20, exit_n=10, trend_ema=200,
+        max_positions=10, pyramid_levels=3,
+    )
+    # BTC 弱 → 一笔都不开
+    assert with_filter.n_trades == 0
+    # 无过滤时应至少开过一笔 (单币强势)
+    assert without_filter.n_trades >= 1
+
+
+def test_btc_filter_none_preserves_behavior():
+    """btc_df=None 时行为不变。"""
+    closes = np.linspace(10.0, 100.0, 400).tolist()
+    a = run_trend_backtest({"X/USDT": _klines(closes)}, btc_df=None)
+    b = run_trend_backtest({"X/USDT": _klines(closes)})
+    assert a.total_return_pct == pytest.approx(b.total_return_pct, rel=1e-9)
+    assert a.n_trades == b.n_trades
+
+
 def test_chandelier_mult_zero_preserves_original_behavior():
     """chandelier_mult=0 时止损仅用 Donchian 低点, 行为与旧版等价。"""
     closes = np.linspace(10.0, 100.0, 400).tolist()

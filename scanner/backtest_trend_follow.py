@@ -83,6 +83,8 @@ class TrendBacktestResult:
     chandelier_mult: float = 0.0        # 0 = 禁用; 3.0 经典
     n_chandelier_stops: int = 0
     n_donchian_stops: int = 0
+    btc_trend_ema: int = 0               # 0 = 禁用 regime filter
+    n_days_btc_blocked: int = 0          # BTC 弱势被拦截的天数
 
 
 def _max_drawdown(equity: list[float]) -> float:
@@ -122,12 +124,16 @@ def run_trend_backtest(
     atr_pyramid_mult: float = 1.0,
     atr_period: int = 14,
     chandelier_mult: float = 0.0,
+    btc_df: pd.DataFrame | None = None,
+    btc_trend_ema: int = 200,
 ) -> TrendBacktestResult:
     """趋势跟踪 + 金字塔日级事件驱动回测。
 
     Returns:
         TrendBacktestResult 含 equity 曲线、交易统计、最大同时持仓数。
     """
+    btc_filter_on = btc_df is not None and btc_trend_ema > 0
+
     if not klines:
         return TrendBacktestResult(
             n_trades=0, n_winning=0, n_losing=0,
@@ -135,6 +141,7 @@ def run_trend_backtest(
             max_positions=max_positions, pyramid_levels=pyramid_levels,
             atr_pyramid_mult=atr_pyramid_mult, atr_period=atr_period,
             chandelier_mult=chandelier_mult,
+            btc_trend_ema=btc_trend_ema if btc_filter_on else 0,
         )
 
     timeline = max(len(df) for df in klines.values())
@@ -146,6 +153,7 @@ def run_trend_backtest(
             max_positions=max_positions, pyramid_levels=pyramid_levels,
             atr_pyramid_mult=atr_pyramid_mult, atr_period=atr_period,
             chandelier_mult=chandelier_mult,
+            btc_trend_ema=btc_trend_ema if btc_filter_on else 0,
         )
 
     level_capital = 1.0 / max_positions
@@ -160,11 +168,19 @@ def run_trend_backtest(
     max_pyramid_reached = 0
     n_chandelier_stops = 0
     n_donchian_stops = 0
+    n_days_btc_blocked = 0
 
     # 初始 equity (warmup 之前)
     equity.append(1.0)
 
     for idx in range(warmup, timeline):
+        # ── Step 0: BTC 大盘过滤 (若启用) ──
+        # BTC 弱势时: 暂停新开仓 + 暂停金字塔加仓, 但保留止损与 MTM
+        btc_ok = True
+        if btc_filter_on:
+            btc_ok = is_above_ema(btc_df["close"], btc_trend_ema, up_to=idx)
+            if not btc_ok:
+                n_days_btc_blocked += 1
         # ── Step 1a: 先更新每个持仓的 trailing_high (用今日 close) ──
         for symbol, pos in positions.items():
             df = klines.get(symbol)
@@ -213,15 +229,16 @@ def run_trend_backtest(
         for s in to_close:
             del positions[s]
 
-        # ── Step 2: 金字塔加仓 (对未被平仓的持仓; trailing_high 已在 Step 1a 更新) ──
+        # ── Step 2: 金字塔加仓 (仅 BTC 强势时) ──
         for symbol, pos in positions.items():
+            if not btc_ok:
+                break
             df = klines.get(symbol)
             if df is None or len(df) <= idx:
                 continue
             close = float(df["close"].iloc[idx])
             if pos.levels >= pyramid_levels:
                 continue
-            # 条件: 今日即持仓期间新高 (close == trailing_high) + 浮盈 ≥ levels × k × ATR
             if close < pos.trailing_high:
                 continue
             a = atr(df, period=atr_period, up_to=idx)
@@ -230,8 +247,8 @@ def run_trend_backtest(
                 units = level_capital / close
                 pos.entries.append(EntryLot(idx=idx, price=close, units=units))
 
-        # ── Step 3: 未持仓的币尝试入场 ──
-        if len(positions) < max_positions:
+        # ── Step 3: 未持仓的币尝试入场 (仅 BTC 强势时) ──
+        if btc_ok and len(positions) < max_positions:
             for symbol, df in klines.items():
                 if symbol in positions:
                     continue
@@ -336,4 +353,6 @@ def run_trend_backtest(
         chandelier_mult=chandelier_mult,
         n_chandelier_stops=n_chandelier_stops,
         n_donchian_stops=n_donchian_stops,
+        btc_trend_ema=btc_trend_ema if btc_filter_on else 0,
+        n_days_btc_blocked=n_days_btc_blocked,
     )
