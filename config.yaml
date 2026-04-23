@@ -76,6 +76,23 @@ scanner:
 schedule:
   monitor_interval: 60
   scan_time: 08:03
+trend_follow:
+  # 🔒 默认 paper 模式; 设为 true 后 daily_scan 会真实下单 (谨慎!)
+  execute_live: false
+  notional_per_level: 20          # 每层仓位 USDT
+  leverage: 10                     # 杠杆倍数
+  safety_sl_multiplier: 5.0        # 保险 SL 距离 (entry - N × ATR), 兜底用
+  # 策略核心参数
+  entry_n: 30                      # 突破过去 N 日最高 close
+  exit_n: 15                       # 跌破过去 N 日最低 close → Donchian 止损
+  trend_ema: 200                   # 单币趋势过滤 EMA
+  btc_trend_ema: 100               # BTC 大盘过滤 EMA
+  atr_period: 14
+  chandelier_mult: 3.0             # Trailing stop 距离 (= trailing_high - N × ATR)
+  pyramid_levels: 3                # 最多金字塔层数
+  atr_pyramid_mult: 1.0            # 加仓阈值 (avg + levels × N × ATR)
+  max_positions: 10                # 最多同时持仓数
+  top_n: 10                        # 打印显示前 N 个
 signal:
   atr_period: 14
   atr_sl_multiplier: 2.0

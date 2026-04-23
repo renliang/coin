@@ -770,12 +770,13 @@ def run_breakout(config: dict, signal_config: SignalConfig, top_n: int | None = 
 
 
 def run_trend(config: dict, top_n: int | None = None, symbols_override: list[str] | None = None,
-              paper: bool = False):
-    """趋势跟踪扫描 (Phase 1b + paper 模式) — 产出 entry/pyramid/exit 三类信号。
+              paper: bool = False, live: bool = False):
+    """趋势跟踪扫描 — 产出 entry/pyramid/exit 三类信号, 按模式执行。
 
-    paper=False (默认): 仅打印信号, 不写 DB。
-    paper=True: 把信号应用到虚拟持仓 DB (不下真单), 并更新 trailing_high。
-                用于"跟单"方式验证信号质量, 对比回测预期。
+    执行模式 (优先级: live > paper > 仅打印):
+      - live=True: 真实下单 + 写 DB + 挂保险 SL
+      - paper=True: 虚拟执行到 DB, 不下真单
+      - 默认 (都 False): 仅打印信号
     """
     from datetime import datetime
     from scanner.trend_scanner import scan_trend_actions
@@ -890,8 +891,51 @@ def run_trend(config: dict, top_n: int | None = None, symbols_override: list[str
         else:
             print(f"\n   当日无信号。\n")
 
+    # ── Live 模式: 真实下单 + 同步 DB ──
+    if live:
+        from scanner.kline import get_authed_usdm
+        from scanner.trend_live import live_execute
+        import os
+
+        api_key = os.environ.get("BINANCE_API_KEY", "")
+        api_secret = os.environ.get("BINANCE_API_SECRET", "")
+        if not api_key or not api_secret:
+            print("\n⛔ LIVE 模式需要 BINANCE_API_KEY / BINANCE_API_SECRET 环境变量, 已跳过。\n")
+            return result
+
+        proxy = (config.get("proxy") or {}).get("https", "")
+        exchange = get_authed_usdm(api_key, api_secret, proxy)
+        today = datetime.utcnow().strftime("%Y-%m-%d")
+        notional = trend_cfg.get("notional_per_level", 20.0)
+        leverage = trend_cfg.get("leverage", 10)
+        sl_mult = trend_cfg.get("safety_sl_multiplier", 5.0)
+
+        print(f"\n💸 LIVE 执行 @ {today}  notional={notional}U/层  leverage={leverage}x  "
+              f"safety_sl={sl_mult}×ATR")
+        applied = live_execute(result, exchange, notional_per_level=notional,
+                               leverage=leverage, sl_multiplier=sl_mult, today=today)
+        # trailing_high 仍然基于日线 close 更新
+        from scanner.trend_paper import update_all_trailing_highs
+        n_updated = update_all_trailing_highs(klines)
+
+        print(f"   平仓 {len(applied['closed'])} | 加仓 {len(applied['added'])} | "
+              f"开仓 {len(applied['opened'])} | 错误 {len(applied['errors'])} | "
+              f"trailing_high 上调 {n_updated}")
+        for a in applied["closed"]:
+            print(f"   🔴 CLOSE {a['symbol']} @ {a['price']:.6g}  原因={a['reason']}  "
+                  f"层数={a['levels']}")
+        for a in applied["added"]:
+            print(f"   🟡 PYRAMID {a['symbol']} @ {a['price']:.6g}  amt={a['amount']:.6g}  "
+                  f"→ 层数={a['new_level']}  SL={a['sl_order_id']}")
+        for a in applied["opened"]:
+            print(f"   🟢 OPEN {a['symbol']} @ {a['price']:.6g}  amt={a['amount']:.6g}  "
+                  f"ATR={a['atr']:.6g}  SL={a['sl_order_id']}")
+        for e in applied["errors"]:
+            print(f"   ⚠️  {e['action'].upper()} {e['symbol']}: {e['error']}")
+        print(f"\n   LIVE mode: 真实订单已提交, DB 已同步。")
+
     # ── Paper 模式: 应用动作 + 更新 trailing_high + 打印 NAV ──
-    if paper:
+    elif paper:
         from scanner.trend_paper import (
             paper_execute, update_all_trailing_highs, compute_paper_nav,
         )
@@ -922,7 +966,7 @@ def run_trend(config: dict, top_n: int | None = None, symbols_override: list[str
         print(f"   持仓 {nav_info['n_open']} 个 / 已平仓 {nav_info['n_closed']} 笔")
         print(f"\n   Paper mode: DB 已更新, 未下真单。")
     else:
-        print(f"\n   Phase 1b: 仅打印信号，未下单 (加 --paper 可启用虚拟执行)。")
+        print(f"\n   仅打印信号，未下单 (加 --paper 或 --live 可执行)。")
 
     print(f"   参数: entry_n={entry_n}, exit_n={exit_n}, trend_ema={trend_ema}, "
           f"btc_trend_ema={btc_trend_ema}, chandelier={chandelier_mult}, "
@@ -1481,12 +1525,19 @@ def run_serve(
         logger.info("=== 定时扫描开始（四模式 + trend paper + 下单）===")
         div_signals = _scan_all_modes()
 
-        # 趋势跟踪: daily cron 跑 paper=True, 维护虚拟持仓 DB
+        # 趋势跟踪: 根据 config.trend_follow.execute_live 决定 live vs paper
         # 独立 try/except, 失败不影响 divergence 下单
         try:
-            run_trend(config, paper=True)
+            trend_cfg = config.get("trend_follow", {}) if isinstance(config.get("trend_follow"), dict) else {}
+            live_mode = bool(trend_cfg.get("execute_live", False))
+            if live_mode:
+                logger.info("[trend] 执行模式: LIVE (真实下单)")
+                run_trend(config, live=True)
+            else:
+                logger.info("[trend] 执行模式: PAPER (虚拟)")
+                run_trend(config, paper=True)
         except Exception as e:
-            logger.error("trend paper 扫描/执行异常: %s", e)
+            logger.error("trend 扫描/执行异常: %s", e)
 
         if div_signals and trading_config.enabled:
             top_n = trading_config.max_positions

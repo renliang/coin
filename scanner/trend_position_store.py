@@ -34,6 +34,7 @@ class TrendPosition:
     close_price: float | None = None
     close_reason: str | None = None
     realized_pnl_pct: float | None = None
+    safety_sl_order_id: str | None = None    # 交易所保险 SL 订单 ID (live 模式)
 
     @property
     def total_units(self) -> float:
@@ -60,7 +61,7 @@ def _get_conn() -> sqlite3.Connection:
 
 
 def init_schema() -> None:
-    """创建表 (幂等)。"""
+    """创建表 (幂等) + 必要列迁移。"""
     with _get_conn() as conn:
         conn.execute("""
             CREATE TABLE IF NOT EXISTS trend_positions (
@@ -74,11 +75,16 @@ def init_schema() -> None:
                 closed_at TEXT,
                 close_price REAL,
                 close_reason TEXT,
-                realized_pnl_pct REAL
+                realized_pnl_pct REAL,
+                safety_sl_order_id TEXT
             )
         """)
         conn.execute("CREATE INDEX IF NOT EXISTS idx_trend_positions_status ON trend_positions(status)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_trend_positions_symbol_status ON trend_positions(symbol, status)")
+        # 历史表迁移: safety_sl_order_id 列在早期没有, 幂等添加
+        cols = {row[1] for row in conn.execute("PRAGMA table_info(trend_positions)").fetchall()}
+        if "safety_sl_order_id" not in cols:
+            conn.execute("ALTER TABLE trend_positions ADD COLUMN safety_sl_order_id TEXT")
         conn.commit()
 
 
@@ -97,6 +103,7 @@ def _row_to_position(row: sqlite3.Row) -> TrendPosition:
         close_price=row["close_price"],
         close_reason=row["close_reason"],
         realized_pnl_pct=row["realized_pnl_pct"],
+        safety_sl_order_id=row["safety_sl_order_id"] if "safety_sl_order_id" in row.keys() else None,
     )
 
 
@@ -106,6 +113,7 @@ def open_position(
     units: float,
     atr_at_open: float,
     opened_at: str,
+    safety_sl_order_id: str | None = None,
 ) -> TrendPosition:
     """开新仓。若该 symbol 已有 open 状态持仓则抛 ValueError (必须先 close)。"""
     init_schema()
@@ -118,16 +126,27 @@ def open_position(
         cur = conn.execute(
             """
             INSERT INTO trend_positions
-                (symbol, entries_json, trailing_high, atr_at_open, opened_at, status)
-            VALUES (?, ?, ?, ?, ?, 'open')
+                (symbol, entries_json, trailing_high, atr_at_open, opened_at, status, safety_sl_order_id)
+            VALUES (?, ?, ?, ?, ?, 'open', ?)
             """,
-            (symbol, json.dumps(entries), entry_price, atr_at_open, opened_at),
+            (symbol, json.dumps(entries), entry_price, atr_at_open, opened_at,
+             safety_sl_order_id),
         )
         conn.commit()
         pos_id = cur.lastrowid
     got = _get_by_id(pos_id)
     assert got is not None
     return got
+
+
+def update_safety_sl_order_id(symbol: str, new_sl_order_id: str | None) -> None:
+    """更新保险 SL 订单 ID (加仓后需要重挂 SL)。"""
+    with _get_conn() as conn:
+        conn.execute(
+            "UPDATE trend_positions SET safety_sl_order_id = ? WHERE symbol = ? AND status = 'open'",
+            (new_sl_order_id, symbol),
+        )
+        conn.commit()
 
 
 def add_pyramid(symbol: str, price: float, units: float, date: str) -> TrendPosition:

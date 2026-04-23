@@ -27,6 +27,8 @@ def main(argv: list[str] | None = None) -> None:
     p_scan.add_argument("--no-confirm", action="store_true", help="关闭多指标共振过滤")
     p_scan.add_argument("--paper", action="store_true",
                         help="[trend 专用] 虚拟执行: 把信号写入持仓 DB 但不下真单")
+    p_scan.add_argument("--live", action="store_true",
+                        help="[trend 专用] 真实下单执行 (需 BINANCE_API_KEY/SECRET 环境变量)")
 
     # ── backtest ──────────────────────────────────────────
     p_bt = sub.add_parser("backtest", help="回测验证形态有效性")
@@ -129,7 +131,7 @@ def main(argv: list[str] | None = None) -> None:
             run_divergence(config, signal_config, top_n=args.top, symbols_override=args.symbols)
         elif args.mode == "trend":
             run_trend(config, top_n=args.top, symbols_override=args.symbols,
-                      paper=args.paper)
+                      paper=args.paper, live=args.live)
         else:
             run(config, signal_config, top_n=args.top, symbols_override=args.symbols)
 
