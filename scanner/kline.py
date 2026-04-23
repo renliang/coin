@@ -1,5 +1,6 @@
 import logging
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import ccxt
 import pandas as pd
@@ -106,17 +107,52 @@ def fetch_klines(symbol: str, days: int = 30, use_futures: bool = True) -> pd.Da
     return df if len(df) > 0 else None
 
 
-def fetch_klines_batch(symbols: list[str], days: int = 30, delay: float = 0.5) -> dict[str, pd.DataFrame]:
-    """批量拉取多个交易对的K线。"""
-    results = {}
+def fetch_klines_batch(
+    symbols: list[str],
+    days: int = 30,
+    delay: float = 0.0,
+    workers: int = 10,
+) -> dict[str, pd.DataFrame]:
+    """批量拉取多个交易对的K线。
+
+    - workers > 1: 使用 ThreadPoolExecutor 并发（推荐，ccxt 的 enableRateLimit 会自动限速）。
+    - workers <= 1: 串行降级，按 delay 秒间隔。
+
+    Binance USDM fetch_ohlcv weight=5，限额 2400 weight/min ≈ 480 req/min，
+    默认 10 并发远在安全线以内。
+    """
     total = len(symbols)
-    for i, symbol in enumerate(symbols, 1):
-        if i % 50 == 1 or i == total:
-            logger.info("K线拉取进度: %d/%d，已获取%d个", i, total, len(results))
-        df = fetch_klines(symbol, days)
-        if df is not None and len(df) >= 7:
-            results[symbol] = df
-        time.sleep(delay)
+    if total == 0:
+        return {}
+
+    results: dict[str, pd.DataFrame] = {}
+
+    if workers <= 1:
+        for i, symbol in enumerate(symbols, 1):
+            if i % 50 == 1 or i == total:
+                logger.info("K线拉取进度: %d/%d，已获取%d个", i, total, len(results))
+            df = fetch_klines(symbol, days)
+            if df is not None and len(df) >= 7:
+                results[symbol] = df
+            if delay > 0:
+                time.sleep(delay)
+        return results
+
+    done = 0
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        futures = {pool.submit(fetch_klines, s, days): s for s in symbols}
+        for fut in as_completed(futures):
+            done += 1
+            symbol = futures[fut]
+            try:
+                df = fut.result()
+            except Exception as exc:
+                logger.warning("fetch_klines %s failed: %s", symbol, exc)
+                df = None
+            if df is not None and len(df) >= 7:
+                results[symbol] = df
+            if done % 50 == 1 or done == total:
+                logger.info("K线拉取进度: %d/%d，已获取%d个", done, total, len(results))
     return results
 
 
