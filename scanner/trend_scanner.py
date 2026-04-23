@@ -14,6 +14,30 @@ import math
 import pandas as pd
 
 from scanner.trend_follow import atr, donchian_high, donchian_low, is_above_ema
+from scanner.trend_position_store import TrendPosition
+
+
+@dataclass(frozen=True)
+class TrendAction:
+    """一个建议动作 (入场/加仓/平仓), 供外层执行器消费。"""
+    action_type: str            # "entry" | "pyramid" | "exit"
+    symbol: str
+    price: float                # 执行价 (今日 close)
+    reason: str                 # breakout / atr_pyramid / chandelier_stop / donchian_stop
+    atr: float = 0.0
+    trailing_high: float = 0.0
+    stop_price: float = 0.0
+    new_level: int = 0          # 入场或加仓后的层数
+    donchian_high: float = 0.0
+    donchian_low: float = 0.0
+    chandelier_stop: float = 0.0
+
+
+@dataclass(frozen=True)
+class ScanTrendResult:
+    entries: list[TrendAction]
+    pyramid_adds: list[TrendAction]
+    exits: list[TrendAction]
 
 
 @dataclass(frozen=True)
@@ -88,3 +112,147 @@ def scan_trend_entries(
 
     signals.sort(key=lambda s: s.breakout_strength, reverse=True)
     return signals
+
+
+def scan_trend_actions(
+    klines: dict[str, pd.DataFrame],
+    btc_df: pd.DataFrame | None,
+    positions: list[TrendPosition],
+    entry_n: int = 30,
+    exit_n: int = 15,
+    trend_ema: int = 200,
+    btc_trend_ema: int = 100,
+    atr_period: int = 14,
+    chandelier_mult: float = 3.0,
+    pyramid_levels: int = 3,
+    atr_pyramid_mult: float = 1.0,
+    max_positions: int = 10,
+) -> ScanTrendResult:
+    """状态感知扫描: 综合考虑持仓状态, 产出 entry/pyramid/exit 三类动作。
+
+    执行顺序 (每日):
+      1. BTC 大盘判定 (弱 → 不入场不加仓, 但止损仍处理)
+      2. 对每个持仓: 检查止损 (Donchian + Chandelier 取紧) → exit 信号
+      3. 对每个未被止损的持仓: 检查金字塔加仓 → pyramid 信号 (BTC 强时)
+      4. 对未持仓的币: 检查突破入场 → entry 信号 (BTC 强 + 有空位)
+    """
+    btc_ok = True
+    if btc_df is not None and btc_trend_ema > 0:
+        btc_ok = is_above_ema(btc_df["close"], btc_trend_ema)
+
+    held_symbols = {p.symbol for p in positions if p.status == "open"}
+    n_open = len(held_symbols)
+
+    exits: list[TrendAction] = []
+    pyramid_adds: list[TrendAction] = []
+    entries: list[TrendAction] = []
+
+    # ── Step 1: 持仓 - 止损检查 (无论 BTC 强弱都跑) ──
+    to_close_symbols: set[str] = set()
+    for pos in positions:
+        if pos.status != "open":
+            continue
+        df = klines.get(pos.symbol)
+        if df is None or len(df) < max(exit_n, atr_period) + 1:
+            continue
+        last_idx = len(df) - 1
+        close = float(df["close"].iloc[last_idx])
+        # Donchian 低点止损
+        dl = donchian_low(df["close"], exit_n, up_to=last_idx, exclude_current=True)
+        donchian_trigger = (not math.isnan(dl)) and close < dl
+        # Chandelier trailing stop (基于 DB 里的 trailing_high + 当前 ATR)
+        chandelier_trigger = False
+        chandelier_stop = 0.0
+        a = atr(df, period=atr_period)
+        if chandelier_mult > 0 and pos.trailing_high > 0:
+            chandelier_stop = pos.trailing_high - chandelier_mult * a
+            chandelier_trigger = close < chandelier_stop
+        if donchian_trigger or chandelier_trigger:
+            reason = "chandelier_stop" if chandelier_trigger else "donchian_stop"
+            exits.append(TrendAction(
+                action_type="exit",
+                symbol=pos.symbol,
+                price=close,
+                reason=reason,
+                atr=a,
+                trailing_high=pos.trailing_high,
+                stop_price=max(chandelier_stop, dl if not math.isnan(dl) else 0.0),
+                donchian_low=dl if not math.isnan(dl) else 0.0,
+                chandelier_stop=chandelier_stop,
+            ))
+            to_close_symbols.add(pos.symbol)
+
+    # ── Step 2: 金字塔加仓 (BTC 强势, 未被止损) ──
+    if btc_ok:
+        for pos in positions:
+            if pos.status != "open" or pos.symbol in to_close_symbols:
+                continue
+            if pos.levels >= pyramid_levels:
+                continue
+            df = klines.get(pos.symbol)
+            if df is None or len(df) < atr_period + 1:
+                continue
+            last_idx = len(df) - 1
+            close = float(df["close"].iloc[last_idx])
+            # 条件: 今日创持仓期间新高 + 浮盈 ≥ levels × k × ATR
+            new_trailing = max(pos.trailing_high, close)
+            if close < new_trailing:
+                continue  # 今日不是新高
+            a = atr(df, period=atr_period)
+            threshold = pos.avg_price + pos.levels * atr_pyramid_mult * a
+            if close >= threshold:
+                pyramid_adds.append(TrendAction(
+                    action_type="pyramid",
+                    symbol=pos.symbol,
+                    price=close,
+                    reason="atr_pyramid",
+                    atr=a,
+                    trailing_high=new_trailing,
+                    new_level=pos.levels + 1,
+                ))
+
+    # ── Step 3: 入场 (BTC 强势 + 有空位 + 未持仓) ──
+    slots = max_positions - n_open
+    if btc_ok and slots > 0:
+        candidates: list[TrendAction] = []
+        min_required = max(entry_n, trend_ema, atr_period) + 1
+        for symbol, df in klines.items():
+            if symbol in held_symbols:
+                continue
+            if df is None or len(df) < min_required:
+                continue
+            closes = df["close"].astype(float)
+            last_idx = len(closes) - 1
+            close = float(closes.iloc[last_idx])
+            dh = donchian_high(closes, entry_n, up_to=last_idx, exclude_current=True)
+            if math.isnan(dh) or close <= dh:
+                continue
+            if not is_above_ema(closes, trend_ema):
+                continue
+            a = atr(df, period=atr_period)
+            dl = donchian_low(closes, exit_n, up_to=last_idx, exclude_current=True)
+            if math.isnan(dl):
+                continue
+            chandelier = close - chandelier_mult * a
+            strength = close / dh - 1.0 if dh > 0 else 0.0
+            candidates.append(TrendAction(
+                action_type="entry",
+                symbol=symbol,
+                price=close,
+                reason="breakout",
+                atr=a,
+                trailing_high=close,
+                new_level=1,
+                donchian_high=dh,
+                donchian_low=dl,
+                chandelier_stop=chandelier,
+                stop_price=max(chandelier, dl),
+            ))
+        # 按突破强度降序, 取前 slots 个
+        candidates.sort(
+            key=lambda s: (s.price / s.donchian_high - 1.0) if s.donchian_high > 0 else 0.0,
+            reverse=True,
+        )
+        entries = candidates[:slots]
+
+    return ScanTrendResult(entries=entries, pyramid_adds=pyramid_adds, exits=exits)

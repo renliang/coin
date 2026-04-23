@@ -770,11 +770,13 @@ def run_breakout(config: dict, signal_config: SignalConfig, top_n: int | None = 
 
 
 def run_trend(config: dict, top_n: int | None = None, symbols_override: list[str] | None = None):
-    """趋势跟踪扫描 (Phase 1a) — 出当日突破入场信号, 只打印不下单。
+    """趋势跟踪扫描 (Phase 1b) — 基于当前持仓状态出 entry/pyramid/exit 三类信号。
 
-    后续 Phase 1b 会加入金字塔加仓/止损触发信号, Phase 2 接入真实执行器。
+    只打印不下单。Phase 2 会接入真实执行器。
     """
-    from scanner.trend_scanner import scan_trend_entries
+    from datetime import datetime
+    from scanner.trend_scanner import scan_trend_actions
+    from scanner.trend_position_store import get_open_positions, init_schema
     from scanner.trend_follow import is_above_ema
     from scanner.kline import fetch_klines
     from tabulate import tabulate
@@ -786,72 +788,110 @@ def run_trend(config: dict, top_n: int | None = None, symbols_override: list[str
     btc_trend_ema = trend_cfg.get("btc_trend_ema", 100)
     atr_period = trend_cfg.get("atr_period", 14)
     chandelier_mult = trend_cfg.get("chandelier_mult", 3.0)
+    pyramid_levels = trend_cfg.get("pyramid_levels", 3)
+    atr_pyramid_mult = trend_cfg.get("atr_pyramid_mult", 1.0)
+    max_positions = trend_cfg.get("max_positions", 10)
     top_n = top_n or trend_cfg.get("top_n", 10)
     days = max(trend_ema + 50, 260)
+
+    init_schema()
+    open_positions = get_open_positions()
 
     # Step 1: 获取交易对
     if symbols_override:
         symbols = symbols_override
-        print(f"[1/4] 使用指定的 {len(symbols)} 个交易对")
+        print(f"[1/5] 使用指定的 {len(symbols)} 个交易对")
     else:
-        print(f"[1/4] 获取Binance U本位永续与现货交集列表...")
+        print(f"[1/5] 获取Binance U本位永续与现货交集列表...")
         symbols = fetch_futures_symbols()
         print(f"       共 {len(symbols)} 个合约交易对")
 
+    # 当前持仓的币也要拉数据 (即使不在 symbols 列表里)
+    held = {p.symbol for p in open_positions}
+    for sym in held:
+        if sym not in symbols:
+            symbols.append(sym)
+
     if not symbols:
         print("没有找到交易对。")
-        return []
+        return None
 
-    # Step 2: 拉 K 线 (需要 trend_ema 周期 + 一些余量)
-    print(f"[2/4] 拉取 K 线 ({len(symbols)} 币 × {days}d)...")
+    # Step 2: 拉 K 线
+    print(f"[2/5] 拉取 K 线 ({len(symbols)} 币 × {days}d)...")
     klines = fetch_klines_batch(symbols, days=days)
     print(f"       成功获取 {len(klines)} 个交易对的K线")
 
-    # Step 3: BTC 大盘数据
-    print(f"[3/4] 拉取 BTC 大盘参考数据...")
+    # Step 3: BTC 大盘
+    print(f"[3/5] 拉取 BTC 大盘参考数据...")
     btc = fetch_klines("BTC/USDT", days=days, use_futures=True)
     if btc is None or len(btc) < btc_trend_ema:
         print("BTC 数据不足，无法判定大盘趋势，放弃本轮扫描")
-        return []
-
-    # Step 4: 扫信号
-    print("[4/4] 扫描趋势跟踪入场信号...")
+        return None
     btc_ok = is_above_ema(btc["close"], btc_trend_ema)
-    if not btc_ok:
-        print(f"\n⛔ 大盘过滤: BTC < EMA{btc_trend_ema} → 全市场空仓模式，当日不入场。\n")
-        return []
 
-    signals = scan_trend_entries(
-        klines, btc_df=btc,
+    print(f"[4/5] 当前持仓 {len(open_positions)} 个 / 上限 {max_positions}")
+    if open_positions:
+        rows = []
+        for p in open_positions:
+            rows.append([p.symbol, p.levels, f"{p.avg_price:.6g}",
+                         f"{p.trailing_high:.6g}", p.opened_at])
+        print(tabulate(rows, headers=["币种", "层数", "均价", "持仓期高点", "开仓日"],
+                       tablefmt="simple"))
+
+    # Step 5: 扫 entries / pyramids / exits
+    print(f"[5/5] 扫描 entry/pyramid/exit 信号... (BTC {'✓' if btc_ok else '⛔ 大盘弱势'})")
+    result = scan_trend_actions(
+        klines, btc_df=btc, positions=open_positions,
         entry_n=entry_n, exit_n=exit_n,
         trend_ema=trend_ema, btc_trend_ema=btc_trend_ema,
         atr_period=atr_period, chandelier_mult=chandelier_mult,
+        pyramid_levels=pyramid_levels, atr_pyramid_mult=atr_pyramid_mult,
+        max_positions=max_positions,
     )
-    if not signals:
-        print(f"\n   当日无触发入场信号（大盘 ✓，但 {len(klines)} 个币均无突破）\n")
-        return []
 
-    print(f"\n🟢 趋势跟踪入场信号 — Top {min(top_n, len(signals))} / {len(signals)} 个")
+    # ── 打印平仓信号 (最优先执行) ──
+    if result.exits:
+        print(f"\n🔴 平仓信号 ({len(result.exits)} 个)")
+        rows = [[a.symbol, f"{a.price:.6g}", a.reason,
+                 f"{a.trailing_high:.6g}", f"{a.stop_price:.6g}", f"{a.atr:.6g}"]
+                for a in result.exits]
+        print(tabulate(rows, headers=["币种", "平仓价", "原因", "持仓高点", "止损位", "ATR14"],
+                       tablefmt="simple"))
+
+    # ── 打印金字塔加仓信号 ──
+    if result.pyramid_adds:
+        print(f"\n🟡 金字塔加仓信号 ({len(result.pyramid_adds)} 个)")
+        rows = [[a.symbol, f"{a.price:.6g}", a.new_level, f"{a.atr:.6g}"]
+                for a in result.pyramid_adds]
+        print(tabulate(rows, headers=["币种", "加仓价", "加仓后层数", "ATR14"],
+                       tablefmt="simple"))
+
+    # ── 打印入场信号 ──
+    if result.entries:
+        print(f"\n🟢 新开仓信号 ({len(result.entries[:top_n])} / {len(result.entries)} 个)")
+        rows = []
+        for a in result.entries[:top_n]:
+            strength = (a.price / a.donchian_high - 1.0) * 100 if a.donchian_high > 0 else 0.0
+            rows.append([
+                a.symbol, f"{a.price:.6g}", f"{strength:+.1f}%",
+                f"{a.atr:.6g}", f"{a.donchian_high:.6g}",
+                f"{a.chandelier_stop:.6g}", f"{a.donchian_low:.6g}",
+            ])
+        print(tabulate(rows, headers=["币种", "入场价", "突破强度", "ATR14",
+                                      "破位高点", "Chand止损", "Donch止损"],
+                       tablefmt="simple"))
+
+    if not (result.exits or result.pyramid_adds or result.entries):
+        if not btc_ok:
+            print(f"\n⛔ 大盘过滤: BTC < EMA{btc_trend_ema} → 当日不入场不加仓（持仓正常）\n")
+        else:
+            print(f"\n   当日无信号。\n")
+
+    print(f"\n   Phase 1b: 仅打印信号，未下单。")
     print(f"   参数: entry_n={entry_n}, exit_n={exit_n}, trend_ema={trend_ema}, "
-          f"btc_trend_ema={btc_trend_ema}, chandelier={chandelier_mult}")
-    rows = []
-    for s in signals[:top_n]:
-        rows.append([
-            s.symbol,
-            f"{s.entry_price:.6g}",
-            f"{s.breakout_strength*100:+.1f}%",
-            f"{s.atr:.6g}",
-            f"{s.donchian_high:.6g}",
-            f"{s.initial_stop_chandelier:.6g}",
-            f"{s.initial_stop_donchian:.6g}",
-        ])
-    print(tabulate(
-        rows,
-        headers=["币种", "入场价", "突破强度", "ATR14", "破位高点", "Chand止损", "Donch止损"],
-        tablefmt="simple",
-    ))
-    print(f"\n   Phase 1a: 仅打印信号，未下单。\n")
-    return signals
+          f"btc_trend_ema={btc_trend_ema}, chandelier={chandelier_mult}, "
+          f"pyramid={pyramid_levels}, atr_k={atr_pyramid_mult}, max_pos={max_positions}")
+    return result
 
 
 def run_smc(config: dict, signal_config: SignalConfig, top_n: int | None = None, symbols_override: list[str] | None = None):
