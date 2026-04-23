@@ -1467,14 +1467,27 @@ def run_serve(
 
     def startup_scan():
         """容器启动立即跑：只刷数据，不下单（避免每次重启重复挂单）。"""
-        logger.info("=== 启动扫描开始（四模式，仅刷数据不下单）===")
+        logger.info("=== 启动扫描开始（四模式 + trend 只读，仅刷数据不下单/不写 DB）===")
         _scan_all_modes()
+        # 趋势跟踪: 启动时 paper=False (只看信号, 不写持仓 DB, 避免重启破坏状态)
+        try:
+            run_trend(config, paper=False)
+        except Exception as e:
+            logger.error("trend 启动扫描异常: %s", e)
         logger.info("=== 启动扫描结束 ===")
 
     def daily_scan():
-        """每天 cron 触发：扫描 + 背离 top N 下单（N=max_positions）。"""
-        logger.info("=== 定时扫描开始（四模式 + 下单）===")
+        """每天 cron 触发：扫描 + 背离 top N 下单（N=max_positions）+ trend paper 执行。"""
+        logger.info("=== 定时扫描开始（四模式 + trend paper + 下单）===")
         div_signals = _scan_all_modes()
+
+        # 趋势跟踪: daily cron 跑 paper=True, 维护虚拟持仓 DB
+        # 独立 try/except, 失败不影响 divergence 下单
+        try:
+            run_trend(config, paper=True)
+        except Exception as e:
+            logger.error("trend paper 扫描/执行异常: %s", e)
+
         if div_signals and trading_config.enabled:
             top_n = trading_config.max_positions
             top_signals = sorted(div_signals, key=lambda s: s.score, reverse=True)[:top_n]
