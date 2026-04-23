@@ -75,7 +75,7 @@ scanner:
   window_min_days: 7
 schedule:
   monitor_interval: 60
-  scan_time: 08:10
+  scan_time: 08:03
 signal:
   atr_period: 14
   atr_sl_multiplier: 2.0
