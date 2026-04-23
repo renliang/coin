@@ -769,6 +769,91 @@ def run_breakout(config: dict, signal_config: SignalConfig, top_n: int | None = 
     print(f"结果已保存到 {json_path} 和 {txt_path}")
 
 
+def run_trend(config: dict, top_n: int | None = None, symbols_override: list[str] | None = None):
+    """趋势跟踪扫描 (Phase 1a) — 出当日突破入场信号, 只打印不下单。
+
+    后续 Phase 1b 会加入金字塔加仓/止损触发信号, Phase 2 接入真实执行器。
+    """
+    from scanner.trend_scanner import scan_trend_entries
+    from scanner.trend_follow import is_above_ema
+    from scanner.kline import fetch_klines
+    from tabulate import tabulate
+
+    trend_cfg = config.get("trend_follow", {}) if isinstance(config.get("trend_follow"), dict) else {}
+    entry_n = trend_cfg.get("entry_n", 30)
+    exit_n = trend_cfg.get("exit_n", 15)
+    trend_ema = trend_cfg.get("trend_ema", 200)
+    btc_trend_ema = trend_cfg.get("btc_trend_ema", 100)
+    atr_period = trend_cfg.get("atr_period", 14)
+    chandelier_mult = trend_cfg.get("chandelier_mult", 3.0)
+    top_n = top_n or trend_cfg.get("top_n", 10)
+    days = max(trend_ema + 50, 260)
+
+    # Step 1: 获取交易对
+    if symbols_override:
+        symbols = symbols_override
+        print(f"[1/4] 使用指定的 {len(symbols)} 个交易对")
+    else:
+        print(f"[1/4] 获取Binance U本位永续与现货交集列表...")
+        symbols = fetch_futures_symbols()
+        print(f"       共 {len(symbols)} 个合约交易对")
+
+    if not symbols:
+        print("没有找到交易对。")
+        return []
+
+    # Step 2: 拉 K 线 (需要 trend_ema 周期 + 一些余量)
+    print(f"[2/4] 拉取 K 线 ({len(symbols)} 币 × {days}d)...")
+    klines = fetch_klines_batch(symbols, days=days)
+    print(f"       成功获取 {len(klines)} 个交易对的K线")
+
+    # Step 3: BTC 大盘数据
+    print(f"[3/4] 拉取 BTC 大盘参考数据...")
+    btc = fetch_klines("BTC/USDT", days=days, use_futures=True)
+    if btc is None or len(btc) < btc_trend_ema:
+        print("BTC 数据不足，无法判定大盘趋势，放弃本轮扫描")
+        return []
+
+    # Step 4: 扫信号
+    print("[4/4] 扫描趋势跟踪入场信号...")
+    btc_ok = is_above_ema(btc["close"], btc_trend_ema)
+    if not btc_ok:
+        print(f"\n⛔ 大盘过滤: BTC < EMA{btc_trend_ema} → 全市场空仓模式，当日不入场。\n")
+        return []
+
+    signals = scan_trend_entries(
+        klines, btc_df=btc,
+        entry_n=entry_n, exit_n=exit_n,
+        trend_ema=trend_ema, btc_trend_ema=btc_trend_ema,
+        atr_period=atr_period, chandelier_mult=chandelier_mult,
+    )
+    if not signals:
+        print(f"\n   当日无触发入场信号（大盘 ✓，但 {len(klines)} 个币均无突破）\n")
+        return []
+
+    print(f"\n🟢 趋势跟踪入场信号 — Top {min(top_n, len(signals))} / {len(signals)} 个")
+    print(f"   参数: entry_n={entry_n}, exit_n={exit_n}, trend_ema={trend_ema}, "
+          f"btc_trend_ema={btc_trend_ema}, chandelier={chandelier_mult}")
+    rows = []
+    for s in signals[:top_n]:
+        rows.append([
+            s.symbol,
+            f"{s.entry_price:.6g}",
+            f"{s.breakout_strength*100:+.1f}%",
+            f"{s.atr:.6g}",
+            f"{s.donchian_high:.6g}",
+            f"{s.initial_stop_chandelier:.6g}",
+            f"{s.initial_stop_donchian:.6g}",
+        ])
+    print(tabulate(
+        rows,
+        headers=["币种", "入场价", "突破强度", "ATR14", "破位高点", "Chand止损", "Donch止损"],
+        tablefmt="simple",
+    ))
+    print(f"\n   Phase 1a: 仅打印信号，未下单。\n")
+    return signals
+
+
 def run_smc(config: dict, signal_config: SignalConfig, top_n: int | None = None, symbols_override: list[str] | None = None):
     from scanner.smc import detect_smc
     smc_cfg = config.get("smc", {})
@@ -1822,7 +1907,7 @@ def main():
 
     # 兼容旧 flag 格式 — 解析后转换为新子命令
     parser = argparse.ArgumentParser(description="币种形态筛选器（旧命令格式，建议使用子命令：coin scan / coin backtest / ...）")
-    parser.add_argument("--mode", choices=["accumulation", "divergence", "breakout", "smc"], default="divergence")
+    parser.add_argument("--mode", choices=["accumulation", "divergence", "breakout", "smc", "trend"], default="divergence")
     parser.add_argument("--top", type=int)
     parser.add_argument("--config", default="config.yaml")
     parser.add_argument("--symbols", nargs="+")

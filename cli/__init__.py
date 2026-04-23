@@ -15,10 +15,10 @@ def main(argv: list[str] | None = None) -> None:
     sub = parser.add_subparsers(dest="command")
 
     # ── scan ──────────────────────────────────────────────
-    p_scan = sub.add_parser("scan", help="扫描信号（蓄力/背离/突破）")
+    p_scan = sub.add_parser("scan", help="扫描信号（蓄力/背离/突破/趋势）")
     p_scan.add_argument(
         "--mode", "-m",
-        choices=["accumulation", "divergence", "breakout", "smc"],
+        choices=["accumulation", "divergence", "breakout", "smc", "trend"],
         default="divergence",
         help="扫描模式 (默认: divergence)",
     )
@@ -96,6 +96,7 @@ def main(argv: list[str] | None = None) -> None:
         run_divergence,
         run_breakout,
         run_smc,
+        run_trend,
         run_backtest_cli,
         run_serve,
         run_stats,
@@ -124,6 +125,8 @@ def main(argv: list[str] | None = None) -> None:
         elif args.mode == "divergence":
             # CLI 手动扫描只刷数据，不自动下单。下单由 serve 模式的每日 cron 统一负责。
             run_divergence(config, signal_config, top_n=args.top, symbols_override=args.symbols)
+        elif args.mode == "trend":
+            run_trend(config, top_n=args.top, symbols_override=args.symbols)
         else:
             run(config, signal_config, top_n=args.top, symbols_override=args.symbols)
 
