@@ -42,6 +42,13 @@ def main(argv: list[str] | None = None) -> None:
     p_bt.add_argument("--symbols", nargs="+", help="直接指定交易对")
     p_bt.add_argument("--verify-signal", action="store_true", help="对比 signal 门槛下收益 (仅 accumulation)")
     p_bt.add_argument("--sensitivity", action="store_true", help="输出参数敏感性表 (仅 accumulation)")
+    # divergence 大盘过滤覆盖 (仅 mode=divergence 生效)
+    p_bt.add_argument("--btc-filter", dest="btc_filter", action="store_true", default=None,
+                      help="[divergence] 强制开启 BTC EMA 过滤 (覆盖 config)")
+    p_bt.add_argument("--no-btc-filter", dest="btc_filter", action="store_false",
+                      help="[divergence] 强制关闭 BTC EMA 过滤 (覆盖 config)")
+    p_bt.add_argument("--btc-ema", type=int, default=None,
+                      help="[divergence] BTC EMA 周期 (默认 50)")
 
     # ── track ─────────────────────────────────────────────
     sub.add_parser("track", help="查看所有跟踪中的币种")
@@ -142,6 +149,16 @@ def main(argv: list[str] | None = None) -> None:
             run(config, signal_config, top_n=args.top, symbols_override=args.symbols)
 
     elif args.command == "backtest":
+        # CLI 显式覆盖 divergence.btc_filter / btc_ema(便于 A/B 对比),仅 divergence 生效。
+        if args.mode == "divergence":
+            div_cfg = config.get("divergence", {}) if isinstance(config.get("divergence"), dict) else {}
+            div_cfg = dict(div_cfg)
+            if args.btc_filter is not None:
+                div_cfg["btc_filter"] = args.btc_filter
+            if args.btc_ema is not None:
+                div_cfg["btc_ema"] = args.btc_ema
+            config = dict(config)
+            config["divergence"] = div_cfg
         run_backtest_cli(
             config, signal_config,
             days=args.days,

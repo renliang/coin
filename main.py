@@ -406,16 +406,36 @@ def run_divergence(config: dict, signal_config: SignalConfig, top_n: int | None 
     klines = fetch_klines_batch(symbols, days=90, delay=0.5)
     print(f"       成功获取 {len(klines)} 个交易对的K线")
 
+    # 大盘过滤: 若 div_cfg.btc_filter=True, 仅在 BTC > EMA(btc_ema) 时放行 bullish 信号。
+    # 顶背离(bearish) 不受此过滤影响(我们没有 short side 校准数据)。
+    btc_filter = bool(div_cfg.get("btc_filter", False))
+    btc_ema = int(div_cfg.get("btc_ema", 50))
+    btc_bullish = True
+    if btc_filter:
+        from scanner.trend_follow import is_above_ema
+        btc_df = klines.get("BTC/USDT") or klines.get("BTCUSDT")
+        if btc_df is None or len(btc_df) < btc_ema:
+            print(f"[divergence] btc_filter 开启但无 BTC 数据(或不足 {btc_ema} 天),退化为不过滤")
+        else:
+            btc_bullish = is_above_ema(btc_df["close"], btc_ema)
+            regime = "牛市(BTC>EMA)" if btc_bullish else "熊市(BTC<EMA)"
+            print(f"[divergence] BTC 大盘 EMA({btc_ema}) 状态: {regime}")
+
     # Step 3: 背离检测
     print("[3/4] MACD背离检测中...")
     matches = []
+    suppressed_bullish = 0
     for symbol, df in klines.items():
         result = detect_divergence(df)
         if result.divergence_type == "none":
             continue
+        is_bullish = result.divergence_type == "bullish"
+        if btc_filter and is_bullish and not btc_bullish:
+            suppressed_bullish += 1
+            continue
         price = float(df["close"].iloc[-1])
         atr = calculate_atr(df, period=signal_config.atr_period)
-        signal_type = "底背离" if result.divergence_type == "bullish" else "顶背离"
+        signal_type = "底背离" if is_bullish else "顶背离"
         matches.append({
             "symbol": symbol,
             "price": price,
@@ -429,6 +449,8 @@ def run_divergence(config: dict, signal_config: SignalConfig, top_n: int | None 
             "score_breakdown": result.score_breakdown_dict(),
         })
 
+    if suppressed_bullish:
+        print(f"       BTC 大盘过滤拦截 {suppressed_bullish} 个底背离信号")
     print(f"       背离命中 {len(matches)} 个")
 
     if not matches:

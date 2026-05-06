@@ -272,6 +272,37 @@ def test_run_backtest_valid_modes_accept_empty_input():
         assert hits == [], f"mode={mode} 在空输入下应返回 []"
 
 
+def test_build_btc_bullish_map_with_btc_data():
+    """_build_btc_bullish_map 在有 BTC 数据时返回 date->bool 映射。"""
+    from scanner.backtest import _build_btc_bullish_map
+    n = 60
+    # 构造一个明显趋势向上的 BTC 序列(close 一路涨)
+    prices = [100 + i * 1.5 for i in range(n)]
+    btc_df = _make_klines(prices, [1000] * n)
+    by_date = _build_btc_bullish_map({"BTC/USDT": btc_df}, ema_period=20)
+
+    assert len(by_date) > 0
+    # 数据足量后所有日子都应是 bullish (close > EMA)
+    bullish_count = sum(1 for v in by_date.values() if v)
+    assert bullish_count >= len(by_date) * 0.8, "趋势向上时大部分日子应识别为 bullish"
+
+
+def test_build_btc_bullish_map_without_btc_returns_empty():
+    """klines 中无 BTC 时返回空 dict (调用方应回退)。"""
+    from scanner.backtest import _build_btc_bullish_map
+    btc_df = _make_klines([100] * 30, [1000] * 30)
+    out = _build_btc_bullish_map({"ETH/USDT": btc_df}, ema_period=10)
+    assert out == {}
+
+
+def test_build_btc_bullish_map_insufficient_data():
+    """BTC 数据不足 ema_period 时返回空 dict。"""
+    from scanner.backtest import _build_btc_bullish_map
+    btc_df = _make_klines([100] * 5, [1000] * 5)
+    out = _build_btc_bullish_map({"BTC/USDT": btc_df}, ema_period=50)
+    assert out == {}
+
+
 def test_run_backtest_default_mode_is_accumulation():
     """不传 mode 时,行为与 accumulation 完全一致(向后兼容)。"""
     pattern_prices = [100 - i * 0.7 for i in range(14)]

@@ -169,10 +169,44 @@ def _run_accumulation_backtest(
 
 # ─── 模式 2: divergence ─────────────────────────────────────────────────
 
+def _build_btc_bullish_map(
+    klines: dict[str, pd.DataFrame],
+    ema_period: int,
+) -> dict[str, bool]:
+    """预计算 BTC 每日是否高于 EMA, 返回 {date_str: bool}。
+
+    若 klines 中无 BTC 或数据不足,返回空 dict (调用方应回退为不过滤)。
+    """
+    btc_df = None
+    for sym in ("BTC/USDT", "BTCUSDT"):
+        if sym in klines:
+            btc_df = klines[sym]
+            break
+    if btc_df is None or len(btc_df) < ema_period:
+        return {}
+
+    closes = btc_df["close"].astype(float)
+    dates = btc_df["timestamp"].values
+    ema = closes.ewm(span=ema_period, adjust=False).mean()
+
+    by_date: dict[str, bool] = {}
+    for i in range(len(btc_df)):
+        # 前 ema_period 根 EMA 不稳定,保守不放行
+        if i + 1 < ema_period:
+            continue
+        d = str(pd.Timestamp(dates[i]).date())
+        by_date[d] = float(closes.iloc[i]) > float(ema.iloc[i])
+    return by_date
+
+
 def _run_divergence_backtest(
     klines: dict[str, pd.DataFrame], config: dict,
 ) -> list[BacktestHit]:
-    """MACD 底背离回测(只记录看多信号 bullish)。"""
+    """MACD 底背离回测(只记录看多信号 bullish)。
+
+    可选 BTC 大盘过滤: 若 config.divergence.btc_filter=True,信号当日要求
+    BTC close > EMA(btc_ema)。EMA 周期默认 50 (兼容 90 天 scan 窗口)。
+    """
     from scanner.divergence import detect_divergence
 
     div_cfg = config.get("divergence", {}) if isinstance(config.get("divergence"), dict) else {}
@@ -180,6 +214,15 @@ def _run_divergence_backtest(
     min_distance = div_cfg.get("min_distance", 15)
     max_distance = div_cfg.get("max_distance", 60)
     min_price_diff = div_cfg.get("min_price_diff", 0.05)
+    btc_filter = bool(div_cfg.get("btc_filter", False))
+    btc_ema = int(div_cfg.get("btc_ema", 50))
+
+    btc_bullish_by_date: dict[str, bool] = {}
+    if btc_filter:
+        btc_bullish_by_date = _build_btc_bullish_map(klines, btc_ema)
+        if not btc_bullish_by_date:
+            print(f"[divergence-bt] btc_filter 开启但无 BTC 数据 (或不足 {btc_ema} 天), 退化为不过滤")
+            btc_filter = False
 
     def detect(slice_df: pd.DataFrame):
         result = detect_divergence(
@@ -191,6 +234,10 @@ def _run_divergence_backtest(
         )
         if result.divergence_type != "bullish":
             return None
+        if btc_filter:
+            d = str(pd.Timestamp(slice_df["timestamp"].iloc[-1]).date())
+            if not btc_bullish_by_date.get(d, False):
+                return None
         return True, result.score, int(result.pivot_distance), {
             "divergence_type": result.divergence_type,
         }
