@@ -17,7 +17,11 @@ breakout:
   top_n: 20
 
 divergence:
-  min_score: 0.7
+  # 校准 (2026-05-06, 180d 回测): score 与未来收益相关系数仅 +0.08,
+  # 但 [0.65, 0.75) 区间是 30d 收益甜区 (n=38, 均值 +4.6%)。
+  # >=0.75 反向劣化 (n=13, 均值 -7.3%), 故加上限。
+  min_score: 0.65
+  max_score: 0.75
   top_n: 20
 listing_intel:
   dexscreener_delay: 0.35

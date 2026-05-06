@@ -38,6 +38,29 @@ def test_filter_by_min_score():
     assert signals[1].symbol == "C/USDT"
 
 
+def test_filter_by_max_score():
+    """max_score 上限剔除评分过高的信号(divergence 校准发现 score>=max 反向劣化)。"""
+    matches = [
+        {"symbol": "A/USDT", "price": 100.0, "score": 0.65, "drop_pct": 0.10, "volume_ratio": 0.3, "window_days": 14},
+        {"symbol": "B/USDT", "price": 50.0, "score": 0.72, "drop_pct": 0.08, "volume_ratio": 0.4, "window_days": 10},
+        {"symbol": "C/USDT", "price": 200.0, "score": 0.80, "drop_pct": 0.12, "volume_ratio": 0.2, "window_days": 12},
+        {"symbol": "D/USDT", "price": 30.0, "score": 0.75, "drop_pct": 0.09, "volume_ratio": 0.3, "window_days": 11},
+    ]
+    signals = generate_signals(matches, SignalConfig(min_score=0.65, max_score=0.75))
+    syms = {s.symbol for s in signals}
+    # A (0.65) 和 B (0.72) 通过; C (0.80) 和 D (0.75) 被上限剔除。注意上限为 < 而非 <=。
+    assert syms == {"A/USDT", "B/USDT"}
+
+
+def test_max_score_none_means_no_upper_limit():
+    """max_score=None(默认)时不限上限,与原行为一致。"""
+    matches = [
+        {"symbol": "X/USDT", "price": 100.0, "score": 0.95, "drop_pct": 0.10, "volume_ratio": 0.3, "window_days": 14},
+    ]
+    signals = generate_signals(matches, SignalConfig(min_score=0.6, max_score=None))
+    assert len(signals) == 1
+
+
 def test_trade_params_fixed_fallback():
     """无ATR时回退到固定百分比: score=0.70 → 2.5%回撤, SL=entry*0.95, TP=entry*1.08。"""
     matches = [

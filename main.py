@@ -74,6 +74,7 @@ def load_config(
     sig = raw.get("signal", {})
     signal_config = SignalConfig(
         min_score=sig.get("min_score", 0.6),
+        max_score=sig.get("max_score"),
         hold_days=sig.get("hold_days", 3),
         stop_loss=sig.get("stop_loss", 0.05),
         take_profit=sig.get("take_profit", 0.08),
@@ -254,7 +255,10 @@ def run(config: dict, signal_config: SignalConfig, top_n: int | None = None, sym
 
     # 信号过滤
     signals = generate_signals(ranked, signal_config, klines_map=klines)
-    print(f"[信号] 评分≥{signal_config.min_score} 过滤: {len(ranked)} -> {len(signals)} 个")
+    band_label = f"评分≥{signal_config.min_score}"
+    if signal_config.max_score is not None:
+        band_label += f" 且 <{signal_config.max_score}"
+    print(f"[信号] {band_label} 过滤: {len(ranked)} -> {len(signals)} 个")
 
     if not signals:
         print("\n没有达到信号门槛的币种。")
@@ -375,10 +379,14 @@ def run_divergence(config: dict, signal_config: SignalConfig, top_n: int | None 
     top_n = top_n or div_cfg.get("top_n") or config.get("top_n", 20)
     max_market_cap = config.get("max_market_cap", 100_000_000)
 
-    # divergence 可单独设置 min_score（否则沿用 signal.min_score 主阈值）
+    # divergence 可单独设置 min_score / max_score(否则沿用 signal.* 主阈值)。
+    # max_score 用于剔除极高分(校准发现 score>0.75 区间反向劣化)。
     div_min_score = div_cfg.get("min_score")
     if div_min_score is not None and div_min_score != signal_config.min_score:
         signal_config = replace(signal_config, min_score=div_min_score)
+    div_max_score = div_cfg.get("max_score")
+    if div_max_score is not None and div_max_score != signal_config.max_score:
+        signal_config = replace(signal_config, max_score=div_max_score)
 
     # Step 1: 获取交易对列表
     if symbols_override:
@@ -476,7 +484,10 @@ def run_divergence(config: dict, signal_config: SignalConfig, top_n: int | None 
 
     # 信号过滤
     signals = generate_signals(ranked, signal_config, klines_map=klines)
-    print(f"[信号] 评分≥{signal_config.min_score} 过滤: {len(ranked)} -> {len(signals)} 个")
+    band_label = f"评分≥{signal_config.min_score}"
+    if signal_config.max_score is not None:
+        band_label += f" 且 <{signal_config.max_score}"
+    print(f"[信号] {band_label} 过滤: {len(ranked)} -> {len(signals)} 个")
 
     if not signals:
         print("\n没有达到信号门槛的币种。")
@@ -701,7 +712,10 @@ def run_breakout(config: dict, signal_config: SignalConfig, top_n: int | None = 
 
     # 信号过滤
     signals = generate_signals(ranked, signal_config, klines_map=klines)
-    print(f"[信号] 评分≥{signal_config.min_score} 过滤: {len(ranked)} -> {len(signals)} 个")
+    band_label = f"评分≥{signal_config.min_score}"
+    if signal_config.max_score is not None:
+        band_label += f" 且 <{signal_config.max_score}"
+    print(f"[信号] {band_label} 过滤: {len(ranked)} -> {len(signals)} 个")
 
     if not signals:
         print("\n没有达到信号门槛的币种。")
@@ -1108,7 +1122,10 @@ def run_smc(config: dict, signal_config: SignalConfig, top_n: int | None = None,
 
     # 信号过滤
     signals = generate_signals(ranked, signal_config, klines_map=klines)
-    print(f"[信号] 评分≥{signal_config.min_score} 过滤: {len(ranked)} -> {len(signals)} 个")
+    band_label = f"评分≥{signal_config.min_score}"
+    if signal_config.max_score is not None:
+        band_label += f" 且 <{signal_config.max_score}"
+    print(f"[信号] {band_label} 过滤: {len(ranked)} -> {len(signals)} 个")
 
     if not signals:
         print("\n没有达到信号门槛的币种。")

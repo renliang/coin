@@ -9,6 +9,9 @@ from scanner.levels import nearest_support, nearest_resistance
 @dataclass
 class SignalConfig:
     min_score: float = 0.84
+    # max_score: 上限阈值, score >= max_score 的信号会被拒(避免极高分过拟合)。
+    # None 表示不限制。divergence 校准发现 score>0.75 区间反向劣化,故引入此参数。
+    max_score: float | None = None
     hold_days: int = 3
     stop_loss: float = 0.05
     take_profit: float = 0.08
@@ -114,6 +117,8 @@ def generate_signals(
     signals = []
     for m in matches:
         if m["score"] < signal_config.min_score:
+            continue
+        if signal_config.max_score is not None and m["score"] >= signal_config.max_score:
             continue
         price = m["price"]
         score = m["score"]
