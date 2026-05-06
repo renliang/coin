@@ -1,3 +1,5 @@
+import pytest
+
 import pandas as pd
 import numpy as np
 from scanner.backtest import (
@@ -8,6 +10,7 @@ from scanner.backtest import (
     split_hits_by_median_date,
     compute_signal_verification_splits,
     format_signal_verification,
+    VALID_MODES,
 )
 
 
@@ -254,6 +257,39 @@ def test_run_backtest_confirmation_adjusts_score():
     if hits_yes:
         for h in hits_yes:
             assert isinstance(h.score, float)
+
+
+def test_run_backtest_unknown_mode_raises():
+    """未知 mode 必须抛错,避免静默回退到 accumulation 掩盖问题。"""
+    with pytest.raises(ValueError):
+        run_backtest({}, {}, mode="not_a_mode")
+
+
+def test_run_backtest_valid_modes_accept_empty_input():
+    """所有合法 mode 在空输入下均返回空列表(冒烟测试,确保分发表覆盖)。"""
+    for mode in VALID_MODES:
+        hits = run_backtest({}, {}, mode=mode)
+        assert hits == [], f"mode={mode} 在空输入下应返回 []"
+
+
+def test_run_backtest_default_mode_is_accumulation():
+    """不传 mode 时,行为与 accumulation 完全一致(向后兼容)。"""
+    pattern_prices = [100 - i * 0.7 for i in range(14)]
+    pattern_volumes = [1000] * 7 + [300] * 7
+    future_prices = [pattern_prices[-1] + i * 0.33 for i in range(1, 31)]
+    future_volumes = [500] * 30
+    df = _make_klines(pattern_prices + future_prices, pattern_volumes + future_volumes)
+    config = {
+        "window_min_days": 7, "window_max_days": 14, "volume_ratio": 0.5,
+        "drop_min": 0.05, "drop_max": 0.15, "max_daily_change": 0.05,
+    }
+    hits_default = run_backtest({"TEST/USDT": df}, config)
+    hits_explicit = run_backtest({"TEST/USDT": df}, config, mode="accumulation")
+    assert len(hits_default) == len(hits_explicit)
+    for a, b in zip(hits_default, hits_explicit):
+        assert a.symbol == b.symbol
+        assert a.detect_date == b.detect_date
+        assert a.score == b.score
 
 
 def test_run_backtest_with_confirmation():

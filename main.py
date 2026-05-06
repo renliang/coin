@@ -1262,23 +1262,42 @@ def run_backtest_cli(
     config: dict,
     signal_config: SignalConfig,
     days: int,
+    mode: str = "accumulation",
     symbols_override: list[str] | None = None,
     verify_signal: bool = False,
     run_sensitivity: bool = False,
 ):
-    """运行回测：拉取历史K线，滑动窗口检测，统计收益。"""
+    """运行回测：拉取历史K线，滑动窗口检测，统计收益。
+
+    Args:
+        mode: accumulation | divergence | breakout | smc | trend
+              不同模式有不同的最少历史天数需求,trend 会自动追加 warmup。
+    """
     from scanner.backtest import (
         run_backtest,
         compute_stats,
         format_stats,
         compute_signal_verification_splits,
         format_signal_verification,
+        VALID_MODES,
     )
     from scanner.sensitivity import (
         run_scanner_sensitivity_grid,
         format_sensitivity_table,
         sensitivity_market_cap_note,
     )
+
+    if mode not in VALID_MODES:
+        print(f"未知模式: {mode}, 可选: {VALID_MODES}")
+        return
+
+    # trend 需要 trend_ema(默认200)+ entry_n(默认30) 的预热,自动追加
+    fetch_days = days
+    if mode == "trend":
+        trend_cfg = config.get("trend_follow", {}) if isinstance(config.get("trend_follow"), dict) else {}
+        warmup = max(trend_cfg.get("trend_ema", 200), trend_cfg.get("entry_n", 30)) + 20
+        fetch_days = days + warmup
+        print(f"[trend] 历史天数自动追加 {warmup} 天预热: {days} → {fetch_days}")
 
     # Step 1: 获取交易对列表
     if symbols_override:
@@ -1294,17 +1313,17 @@ def run_backtest_cli(
         return
 
     # Step 2: 拉取历史K线
-    print(f"[2/3] 从Binance拉取 {days} 天K线数据（{len(symbols)}个交易对）...")
-    klines = fetch_klines_batch(symbols, days=days, delay=0.5)
+    print(f"[2/3] 从Binance拉取 {fetch_days} 天K线数据({len(symbols)}个交易对)...")
+    klines = fetch_klines_batch(symbols, days=fetch_days, delay=0.5)
     print(f"       成功获取 {len(klines)} 个交易对的K线")
 
     # Step 3: 回测
-    print("[3/3] 滑动窗口回扫中...")
-    hits = run_backtest(klines, config)
+    print(f"[3/3] 滑动窗口回扫中 (mode={mode})...")
+    hits = run_backtest(klines, config, mode=mode)
     print(f"       总命中 {len(hits)} 次形态")
 
     if not hits:
-        print("\n历史数据中未检测到底部蓄力形态。")
+        print(f"\n历史数据中未检测到 {mode} 模式的形态。")
         return
 
     stats = compute_stats(hits)
@@ -1321,17 +1340,22 @@ def run_backtest_cli(
         print("\n" + format_signal_verification(sv))
 
     if run_sensitivity:
-        grid = run_scanner_sensitivity_grid(klines, base_config=config)
-        print("\n=== 参数敏感性（命中数，同一批 K 线）===\n")
-        print(format_sensitivity_table(grid))
-        print("\n" + sensitivity_market_cap_note(config.get("skip_market_cap_filter", False)))
+        if mode != "accumulation":
+            print(f"\n[skip] 参数敏感性表仅支持 accumulation 模式 (当前 mode={mode})")
+        else:
+            grid = run_scanner_sensitivity_grid(klines, base_config=config)
+            print("\n=== 参数敏感性（命中数，同一批 K 线）===\n")
+            print(format_sensitivity_table(grid))
+            print("\n" + sensitivity_market_cap_note(config.get("skip_market_cap_filter", False)))
 
     # 保存结果
     os.makedirs("results", exist_ok=True)
     ts = datetime.now().strftime("%Y-%m-%d_%H%M%S")
 
-    json_path = f"results/backtest_{ts}.json"
+    json_path = f"results/backtest_{mode}_{ts}.json"
     json_data = {
+        "mode": mode,
+        "days": days,
         "stats": stats,
         "hits": [
             {
@@ -1342,6 +1366,8 @@ def run_backtest_cli(
                 "volume_ratio": h.volume_ratio,
                 "score": h.score,
                 "returns": h.returns,
+                "mode": h.mode,
+                "extras": h.extras,
             }
             for h in hits
         ],
@@ -1349,9 +1375,10 @@ def run_backtest_cli(
     with open(json_path, "w") as f:
         json.dump(json_data, f, ensure_ascii=False, indent=2)
 
-    txt_path = f"results/backtest_{ts}.txt"
+    txt_path = f"results/backtest_{mode}_{ts}.txt"
     with open(txt_path, "w") as f:
         f.write(f"回测时间: {ts}\n")
+        f.write(f"模式: {mode}\n")
         f.write(f"历史天数: {days}\n")
         f.write(f"币种数: {len(klines)}\n\n")
         f.write(output)
@@ -2015,7 +2042,8 @@ def _build_legacy_argv(args: argparse.Namespace) -> list[str]:
     if args.history:
         return argv + ["history", args.history]
     if args.backtest:
-        cmd = argv + ["backtest", "--days", str(args.days)]
+        bt_mode = args.mode or "accumulation"
+        cmd = argv + ["backtest", "--mode", bt_mode, "--days", str(args.days)]
         if args.symbols:
             cmd += ["--symbols"] + args.symbols
         if args.verify_signal:
@@ -2025,7 +2053,8 @@ def _build_legacy_argv(args: argparse.Namespace) -> list[str]:
         return cmd
 
     # scan mode (default)
-    cmd = argv + ["scan", "--mode", args.mode]
+    scan_mode = args.mode or "divergence"
+    cmd = argv + ["scan", "--mode", scan_mode]
     if args.top:
         cmd += ["--top", str(args.top)]
     if args.symbols:
@@ -2047,7 +2076,9 @@ def main():
 
     # 兼容旧 flag 格式 — 解析后转换为新子命令
     parser = argparse.ArgumentParser(description="币种形态筛选器（旧命令格式，建议使用子命令：coin scan / coin backtest / ...）")
-    parser.add_argument("--mode", choices=["accumulation", "divergence", "breakout", "smc", "trend"], default="divergence")
+    # default=None: 让 _build_legacy_argv 区分"用户未传 --mode"与"显式传了"。
+    # scan 路径默认补 divergence,backtest 路径默认补 accumulation,保持各自旧行为。
+    parser.add_argument("--mode", choices=["accumulation", "divergence", "breakout", "smc", "trend"], default=None)
     parser.add_argument("--top", type=int)
     parser.add_argument("--config", default="config.yaml")
     parser.add_argument("--symbols", nargs="+")

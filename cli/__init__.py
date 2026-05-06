@@ -32,10 +32,16 @@ def main(argv: list[str] | None = None) -> None:
 
     # ── backtest ──────────────────────────────────────────
     p_bt = sub.add_parser("backtest", help="回测验证形态有效性")
+    p_bt.add_argument(
+        "--mode", "-m",
+        choices=["accumulation", "divergence", "breakout", "smc", "trend"],
+        default="accumulation",
+        help="回测模式 (默认: accumulation)",
+    )
     p_bt.add_argument("--days", type=int, default=180, help="历史 K 线天数 (默认 180)")
     p_bt.add_argument("--symbols", nargs="+", help="直接指定交易对")
-    p_bt.add_argument("--verify-signal", action="store_true", help="对比 signal 门槛下收益")
-    p_bt.add_argument("--sensitivity", action="store_true", help="输出参数敏感性表")
+    p_bt.add_argument("--verify-signal", action="store_true", help="对比 signal 门槛下收益 (仅 accumulation)")
+    p_bt.add_argument("--sensitivity", action="store_true", help="输出参数敏感性表 (仅 accumulation)")
 
     # ── track ─────────────────────────────────────────────
     sub.add_parser("track", help="查看所有跟踪中的币种")
@@ -139,6 +145,7 @@ def main(argv: list[str] | None = None) -> None:
         run_backtest_cli(
             config, signal_config,
             days=args.days,
+            mode=args.mode,
             symbols_override=args.symbols,
             verify_signal=args.verify_signal,
             run_sensitivity=args.sensitivity,
